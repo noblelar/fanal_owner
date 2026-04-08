@@ -15,6 +15,7 @@ import {
   requirePlatformAuthState,
   savePlatformAuthState,
 } from '~/utils/session.server'
+import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
   canManageAdmins: boolean
@@ -32,12 +33,7 @@ type ActionData = {
   success?: string
 }
 
-export const meta: MetaFunction = () => {
-  return [
-    { title: 'Platform Operators | Fanal Owner' },
-    { name: 'description', content: 'Manage platform owners and platform admins from the owner console.' },
-  ]
-}
+export const meta: MetaFunction = () => buildFanalMeta('Platform Operators')
 
 // This helper keeps the owner-session cookie fresh whenever the API rotates platform tokens.
 async function buildAuthHeaders(

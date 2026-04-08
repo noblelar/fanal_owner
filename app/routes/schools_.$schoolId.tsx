@@ -18,6 +18,7 @@ import {
   requirePlatformAuthState,
   savePlatformAuthState,
 } from '~/utils/session.server'
+import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
   error?: string
@@ -35,10 +36,7 @@ type ActionData = {
 export const meta: MetaFunction<typeof loader> = ({ data }) => {
   const schoolName = data?.school?.schoolName ?? 'School review'
 
-  return [
-    { title: `${schoolName} | Fanal Owner` },
-    { name: 'description', content: 'Review and update the lifecycle of a school on the platform.' },
-  ]
+  return buildFanalMeta(schoolName)
 }
 
 async function buildAuthHeaders(

@@ -5,11 +5,16 @@ import {
   Scripts,
   ScrollRestoration,
 } from "@remix-run/react";
-import type { LinksFunction } from "@remix-run/node";
+import type { LinksFunction, MetaFunction } from "@remix-run/node";
 
 import "./tailwind.css";
+import { buildFanalMeta } from '~/utils/site-meta'
+
+export const meta: MetaFunction = () => buildFanalMeta()
 
 export const links: LinksFunction = () => [
+  { rel: "icon", href: "/images/fanal_icon.ico", type: "image/x-icon" },
+  { rel: "apple-touch-icon", href: "/images/fanal_icon.png" },
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
     rel: "preconnect",

@@ -48,9 +48,12 @@ const DEFAULT_HEADERS = {
 
 export function getPlatformApiBaseUrl() {
   return (
+    process.env.NEXT_PUBLIC_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL ??
+    process.env.NEXT_PUBLIC_API_BASE_WS_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_WS_URL ??
     process.env.FANAL_OWNER_API_BASE_URL ??
     process.env.API_BASE_URL ??
-    process.env.NEXT_PUBLIC_BACKEND_URL ??
     null
   )
 }
@@ -61,7 +64,8 @@ export async function loginPlatformUser(email: string, password: string) {
     return {
       ok: false as const,
       status: 500,
-      error: 'Platform API URL is not configured. Set FANAL_OWNER_API_BASE_URL or API_BASE_URL.',
+      error:
+        'Platform API URL is not configured. Set NEXT_PUBLIC_API_BASE_URL, NEXT_PUBLIC_BACKEND_URL, NEXT_PUBLIC_API_BASE_WS_URL, or NEXT_PUBLIC_BACKEND_WS_URL.',
     }
   }
 

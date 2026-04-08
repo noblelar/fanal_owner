@@ -5,6 +5,7 @@ const SESSION_KEY = 'platform-auth'
 
 function getSessionSecret() {
   const configuredSecret =
+    process.env.JWT_SECRET ??
     process.env.PLATFORM_OWNER_SESSION_SECRET ??
     process.env.SESSION_SECRET ??
     (process.env.NODE_ENV === 'production'
@@ -12,9 +13,7 @@ function getSessionSecret() {
       : 'platform-owner-dev-session-secret-change-me')
 
   if (!configuredSecret) {
-    throw new Error(
-      'PLATFORM_OWNER_SESSION_SECRET or SESSION_SECRET must be configured for fanal_owner.'
-    )
+    throw new Error('JWT_SECRET must be configured for fanal_owner.')
   }
 
   return configuredSecret

@@ -13,18 +13,14 @@ import {
   requirePlatformAuthState,
   savePlatformAuthState,
 } from '~/utils/session.server'
+import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
   user: PlatformSessionUser
   warning?: string
 }
 
-export const meta: MetaFunction = () => {
-  return [
-    { title: 'Platform Dashboard | Fanal Owner' },
-    { name: 'description', content: 'Authenticated platform owner home for Fanal.' },
-  ]
-}
+export const meta: MetaFunction = () => buildFanalMeta('Platform Dashboard')
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const authState = await requirePlatformAuthState(request)

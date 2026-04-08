@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remi
 import { json, redirect } from '@remix-run/node'
 import { Form, useActionData, useNavigation } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
+import { buildFanalMeta } from '~/utils/site-meta'
 import { loginPlatformUser } from '~/utils/platform-auth.server'
 import { getPlatformAuthState, savePlatformAuthState } from '~/utils/session.server'
 
@@ -10,12 +11,7 @@ type ActionData = {
   email?: string
 }
 
-export const meta: MetaFunction = () => {
-  return [
-    { title: 'Platform Login | Fanal Owner' },
-    { name: 'description', content: 'Sign in to the Fanal platform operations console.' },
-  ]
-}
+export const meta: MetaFunction = () => buildFanalMeta('Platform Login')
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const authState = await getPlatformAuthState(request)

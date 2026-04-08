@@ -1,13 +1,9 @@
 import type { LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { redirect } from '@remix-run/node'
+import { buildFanalMeta } from '~/utils/site-meta'
 import { getPlatformAuthState } from '~/utils/session.server'
 
-export const meta: MetaFunction = () => {
-  return [
-    { title: 'Fanal Owner' },
-    { name: 'description', content: 'Platform operations console for Fanal.' },
-  ]
-}
+export const meta: MetaFunction = () => buildFanalMeta()
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const authState = await getPlatformAuthState(request)
