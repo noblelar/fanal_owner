@@ -19,6 +19,20 @@ function getSessionSecret() {
   return configuredSecret
 }
 
+function shouldUseSecureCookies() {
+  const configuredValue = process.env.COOKIE_SECURE?.trim().toLowerCase()
+
+  if (configuredValue === 'false') {
+    return false
+  }
+
+  if (configuredValue === 'true') {
+    return true
+  }
+
+  return process.env.NODE_ENV === 'production'
+}
+
 function getSessionStorage() {
   return createCookieSessionStorage({
     cookie: {
@@ -26,7 +40,7 @@ function getSessionStorage() {
       httpOnly: true,
       path: '/',
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: shouldUseSecureCookies(),
       secrets: [getSessionSecret()],
       maxAge: 60 * 60 * 24 * 7,
     },
