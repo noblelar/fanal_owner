@@ -8,5 +8,8 @@ export type PlatformOperator = {
   roles: string[]
   isActive: boolean
   createdAt?: string
+  invitationSentAt?: string | null
+  invitationAcceptedAt?: string | null
   lastLoginAt?: string | null
+  requiresPasswordSetup: boolean
 }

@@ -9,6 +9,7 @@ import {
   createPlatformOwner,
   listPlatformOperators,
   removePlatformAdmin,
+  resendPlatformOperatorInvite,
 } from '~/utils/platform-operators.server'
 import {
   clearPlatformAuthState,
@@ -72,6 +73,28 @@ function formatDate(value?: string | null) {
 // This helper gives each operator card a stable display label even when no custom display name exists.
 function getOperatorDisplayName(operator: PlatformOperator) {
   return operator.displayName?.trim() || `${operator.firstName} ${operator.lastName}`.trim() || operator.email
+}
+
+// This helper turns invite status into a clear badge so invited operators do not look fully active yet.
+function getOperatorStatus(operator: PlatformOperator) {
+  if (operator.requiresPasswordSetup) {
+    return {
+      className: 'bg-sky-100 text-sky-900',
+      label: 'Invite pending',
+    }
+  }
+
+  if (operator.isActive) {
+    return {
+      className: 'bg-emerald-100 text-emerald-900',
+      label: 'Active',
+    }
+  }
+
+  return {
+    className: 'bg-amber-100 text-amber-900',
+    label: 'Inactive',
+  }
 }
 
 // This helper scopes form repopulation to the form that just failed.
@@ -170,6 +193,7 @@ export async function action({ request }: ActionFunctionArgs) {
     | Awaited<ReturnType<typeof createPlatformAdmin>>
     | Awaited<ReturnType<typeof createPlatformOwner>>
     | Awaited<ReturnType<typeof removePlatformAdmin>>
+    | Awaited<ReturnType<typeof resendPlatformOperatorInvite>>
     | null = null
 
   switch (intent) {
@@ -190,7 +214,6 @@ export async function action({ request }: ActionFunctionArgs) {
         firstName: String(formData.get('firstName') ?? '').trim(),
         lastName: String(formData.get('lastName') ?? '').trim(),
         displayName: String(formData.get('displayName') ?? '').trim() || undefined,
-        password: String(formData.get('password') ?? ''),
       })
       break
     case 'create_admin':
@@ -199,8 +222,13 @@ export async function action({ request }: ActionFunctionArgs) {
         firstName: String(formData.get('firstName') ?? '').trim(),
         lastName: String(formData.get('lastName') ?? '').trim(),
         displayName: String(formData.get('displayName') ?? '').trim() || undefined,
-        password: String(formData.get('password') ?? ''),
       })
+      break
+    case 'resend_invite':
+      result = await resendPlatformOperatorInvite(
+        authState,
+        String(formData.get('operatorId') ?? '').trim()
+      )
       break
     case 'remove_admin':
       result = await removePlatformAdmin(authState, String(formData.get('operatorId') ?? '').trim())
@@ -257,6 +285,7 @@ export default function OperatorsRoute() {
   const isSubmitting = navigation.state === 'submitting'
   const ownerCount = operators.filter((operator) => operator.roles.includes('PLATFORM_OWNER')).length
   const adminCount = operators.filter((operator) => operator.roles.includes('PLATFORM_ADMIN')).length
+  const currentUserIsOwner = currentUserRoles.includes('PLATFORM_OWNER')
 
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,_#f5f1e7_0%,_#ffffff_35%,_#eef4f1_100%)] px-6 py-8 text-slate-900">
@@ -332,6 +361,10 @@ export default function OperatorsRoute() {
                     operator.roles.includes('PLATFORM_ADMIN') &&
                     !operator.roles.includes('PLATFORM_OWNER')
                   const isCurrentUser = operator.id === currentUserId
+                  const status = getOperatorStatus(operator)
+                  const canResendInvite =
+                    operator.requiresPasswordSetup &&
+                    (!operator.roles.includes('PLATFORM_OWNER') || currentUserIsOwner)
 
                   return (
                     <article
@@ -346,13 +379,9 @@ export default function OperatorsRoute() {
                           <p className="mt-1 text-sm text-slate-600">{operator.email}</p>
                         </div>
                         <span
-                          className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                            operator.isActive
-                              ? 'bg-emerald-100 text-emerald-900'
-                              : 'bg-amber-100 text-amber-900'
-                          }`}
+                          className={`rounded-full px-3 py-1 text-xs font-semibold ${status.className}`}
                         >
-                          {operator.isActive ? 'Active' : 'Inactive'}
+                          {status.label}
                         </span>
                       </div>
 
@@ -380,9 +409,27 @@ export default function OperatorsRoute() {
                           <dt className="font-semibold text-slate-500">Last login</dt>
                           <dd className="mt-1 text-slate-900">{formatDate(operator.lastLoginAt)}</dd>
                         </div>
+                        <div className="rounded-2xl bg-white px-4 py-3">
+                          <dt className="font-semibold text-slate-500">Invite sent</dt>
+                          <dd className="mt-1 text-slate-900">{formatDate(operator.invitationSentAt)}</dd>
+                        </div>
+                        <div className="rounded-2xl bg-white px-4 py-3">
+                          <dt className="font-semibold text-slate-500">Password created</dt>
+                          <dd className="mt-1 text-slate-900">
+                            {formatDate(operator.invitationAcceptedAt)}
+                          </dd>
+                        </div>
                       </dl>
 
                       <div className="mt-4 space-y-3">
+                        {operator.requiresPasswordSetup ? (
+                          <FeedbackAlert
+                            tone="info"
+                            title="Invite pending"
+                            message="This operator still needs to open the invite email, create a password, and sign in for the first time."
+                          />
+                        ) : null}
+
                         {isAdminOnly ? (
                           <FeedbackAlert
                             tone="info"
@@ -400,6 +447,36 @@ export default function OperatorsRoute() {
                             message="Owner accounts stay protected here so platform authority cannot be removed accidentally."
                           />
                         )}
+
+                        {canResendInvite ? (
+                          <>
+                            {actionData?.intent === 'resend_invite' &&
+                            actionData.error &&
+                            actionData.fields?.operatorId === operator.id ? (
+                              <FeedbackAlert
+                                tone="error"
+                                title="Invite resend failed"
+                                message={actionData.error}
+                              />
+                            ) : null}
+
+                            <Form method="post">
+                              <input type="hidden" name="_intent" value="resend_invite" />
+                              <input type="hidden" name="operatorId" value={operator.id} />
+                              <button
+                                type="submit"
+                                disabled={isSubmitting}
+                                className="inline-flex items-center justify-center rounded-2xl border border-sky-300 px-4 py-3 text-sm font-semibold text-sky-900 transition hover:border-sky-400 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {isSubmitting &&
+                                navigation.formData?.get('_intent') === 'resend_invite' &&
+                                navigation.formData?.get('operatorId') === operator.id
+                                  ? 'Resending invite...'
+                                  : 'Resend invite'}
+                              </button>
+                            </Form>
+                          </>
+                        ) : null}
 
                         {isAdminOnly ? (
                           <>
@@ -439,7 +516,7 @@ export default function OperatorsRoute() {
               <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
                 <h2 className="text-xl font-bold text-slate-950">Create platform admin</h2>
                 <p className="mt-3 text-sm leading-6 text-slate-600">
-                  Use this for people who should help manage the platform, but should not have owner-level authority.
+                  Use this for people who should help manage the platform, but should not have owner-level authority. They will receive an email invite to create their own password.
                 </p>
 
                 {actionData?.intent === 'create_admin' && actionData.error ? (
@@ -492,24 +569,14 @@ export default function OperatorsRoute() {
                       required
                     />
                   </label>
-                  <label className="block space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Temporary password</span>
-                    <input
-                      type="password"
-                      name="password"
-                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-emerald-500"
-                      required
-                    />
-                  </label>
-
                   <button
                     type="submit"
                     disabled={isSubmitting}
                     className="inline-flex items-center justify-center rounded-2xl bg-emerald-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     {isSubmitting && navigation.formData?.get('_intent') === 'create_admin'
-                      ? 'Creating admin...'
-                      : 'Create platform admin'}
+                      ? 'Sending admin invite...'
+                      : 'Send platform admin invite'}
                   </button>
                 </Form>
               </article>
@@ -518,7 +585,7 @@ export default function OperatorsRoute() {
                 <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
                   <h2 className="text-xl font-bold text-slate-950">Create platform owner</h2>
                   <p className="mt-3 text-sm leading-6 text-slate-600">
-                    Only an existing platform owner can add another owner. Use this sparingly, because owner accounts carry ultimate authority.
+                    Only an existing platform owner can add another owner. Use this sparingly, because owner accounts carry ultimate authority. The invited owner will finish setup from email.
                   </p>
 
                   {actionData?.intent === 'create_owner' && actionData.error ? (
@@ -571,16 +638,6 @@ export default function OperatorsRoute() {
                         required
                       />
                     </label>
-                    <label className="block space-y-2">
-                      <span className="text-sm font-medium text-slate-700">Temporary password</span>
-                      <input
-                        type="password"
-                        name="password"
-                        className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-emerald-500"
-                        required
-                      />
-                    </label>
-
                     <FeedbackAlert
                       tone="warning"
                       title="Owner-level authority"
@@ -594,8 +651,8 @@ export default function OperatorsRoute() {
                       className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
                     >
                       {isSubmitting && navigation.formData?.get('_intent') === 'create_owner'
-                        ? 'Creating owner...'
-                        : 'Create platform owner'}
+                        ? 'Sending owner invite...'
+                        : 'Send platform owner invite'}
                     </button>
                   </Form>
                 </article>
@@ -606,8 +663,9 @@ export default function OperatorsRoute() {
               <h2 className="text-xl font-bold text-amber-950">Management rules</h2>
               <ul className="mt-4 space-y-3 text-sm leading-6 text-amber-900">
                 <li>Only the CLI can bootstrap the very first platform owner.</li>
-                <li>Owners can add other owners and add admins.</li>
-                <li>Admins can add and remove admins, but they cannot create owner accounts.</li>
+                <li>Owners can invite other owners and invite admins.</li>
+                <li>Admins can invite and remove admins, but they cannot create owner accounts.</li>
+                <li>Invited operators create their own passwords from the email setup link before first login.</li>
                 <li>Your current admin session cannot remove itself from this console accidentally.</li>
               </ul>
               <p className="mt-4 text-xs font-medium uppercase tracking-[0.2em] text-amber-800">

@@ -87,6 +87,40 @@ export async function loginPlatformUser(email: string, password: string) {
   }
 }
 
+export async function completePlatformInvite(token: string, newPassword: string) {
+  const baseUrl = getPlatformApiBaseUrl()
+  if (!baseUrl) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: 'Platform API URL is not configured. Set FANAL_OWNER_API_BASE_URL.',
+    }
+  }
+
+  const response = await fetch(`${baseUrl}/api/platform/auth/accept-invite`, {
+    method: 'POST',
+    headers: DEFAULT_HEADERS,
+    body: JSON.stringify({ token, newPassword }),
+  })
+
+  const body = (await response.json().catch(() => null)) as
+    | { message?: string }
+    | null
+
+  if (!response.ok) {
+    return {
+      ok: false as const,
+      status: response.status,
+      error: body?.message || 'Unable to complete the platform invite right now.',
+    }
+  }
+
+  return {
+    ok: true as const,
+    message: body?.message || 'Your platform password has been created successfully.',
+  }
+}
+
 export async function fetchPlatformUser(accessToken: string) {
   const baseUrl = getPlatformApiBaseUrl()
   if (!baseUrl) {

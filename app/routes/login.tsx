@@ -79,6 +79,9 @@ export default function LoginRoute() {
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                 Bootstrap the first owner through the API CLI command before signing in here.
               </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                Newly invited owners and admins should create their passwords from the invite email before signing in.
+              </div>
             </div>
           </section>
 
