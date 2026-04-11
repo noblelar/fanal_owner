@@ -40,6 +40,7 @@ export async function action({ request }: ActionFunctionArgs) {
       { status: 400 }
     )
   }
+  
 
   if (!password || !confirmPassword) {
     return json<ActionData>(
