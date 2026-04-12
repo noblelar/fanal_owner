@@ -18,6 +18,7 @@ import {
 import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
+  deletedSchoolName?: string
   error?: string
   schools: PlatformSchoolSummary[]
   search: string
@@ -44,6 +45,7 @@ async function buildAuthHeaders(
 export async function loader({ request }: LoaderFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   const url = new URL(request.url)
+  const deletedSchoolName = url.searchParams.get('deletedSchool') ?? undefined
   const search = url.searchParams.get('search') ?? ''
   const stage = url.searchParams.get('stage') ?? ''
 
@@ -62,6 +64,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (!result.ok) {
     return json<LoaderData>(
       {
+        deletedSchoolName,
         error: result.error,
         schools: [],
         search,
@@ -73,11 +76,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   return json<LoaderData>(
-    {
-      schools: result.data.schools,
-      total: result.data.total,
-      search,
-      stage,
+      {
+        deletedSchoolName,
+        schools: result.data.schools,
+        total: result.data.total,
+        search,
+        stage,
     },
     { headers }
   )
@@ -113,7 +117,7 @@ function formatDate(value?: string | null) {
 }
 
 export default function SchoolsRoute() {
-  const { error, schools, search, stage, total } = useLoaderData<typeof loader>()
+  const { deletedSchoolName, error, schools, search, stage, total } = useLoaderData<typeof loader>()
 
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,_#f5f1e7_0%,_#ffffff_35%,_#eef4f1_100%)] px-6 py-8 text-slate-900">
@@ -187,6 +191,14 @@ export default function SchoolsRoute() {
             tone="error"
             title="Unable to load school governance"
             message={error}
+          />
+        ) : null}
+
+        {deletedSchoolName ? (
+          <FeedbackAlert
+            tone="success"
+            title="Rejected school deleted"
+            message={`${deletedSchoolName} was removed from the platform successfully.`}
           />
         ) : null}
 

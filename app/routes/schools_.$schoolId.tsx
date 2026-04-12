@@ -9,8 +9,10 @@ import type {
 } from '~/models/platform-school'
 import { didPlatformAuthChange } from '~/utils/platform-auth.server'
 import {
+  deleteRejectedPlatformSchool,
   getPlatformSchool,
   resendPlatformSchoolApprovalEmail,
+  updatePlatformSchoolProfile,
   updatePlatformSchoolLifecycle,
 } from '~/utils/platform-schools.server'
 import {
@@ -21,13 +23,18 @@ import {
 import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
+  currentUserRoles: string[]
   error?: string
+  isOwner: boolean
   school?: PlatformSchoolDetails
 }
 
 type ActionData = {
   formError?: string
   formSuccess?: string
+  intent?: string
+  profileFields?: Record<string, string>
+  deleteConfirmation?: string
   note?: string
   school?: PlatformSchoolDetails
   selectedAction?: string
@@ -53,12 +60,33 @@ async function buildAuthHeaders(
   }
 }
 
+function isPlatformOwner(authState: Awaited<ReturnType<typeof requirePlatformAuthState>>) {
+  return authState.user.roles.includes('PLATFORM_OWNER')
+}
+
+function getSubmittedField(
+  actionData: ActionData | undefined,
+  intent: string,
+  fieldName: string,
+  fallbackValue: string
+) {
+  if (actionData?.intent !== intent) {
+    return fallbackValue
+  }
+
+  return actionData.profileFields?.[fieldName] ?? fallbackValue
+}
+
 export async function loader({ request, params }: LoaderFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   const schoolId = params.schoolId
+  const ownerSessionIsOwner = isPlatformOwner(authState)
 
   if (!schoolId) {
-    return json<LoaderData>({ error: 'School identifier is missing.' }, { status: 400 })
+    return json<LoaderData>(
+      { currentUserRoles: authState.user.roles, error: 'School identifier is missing.', isOwner: ownerSessionIsOwner },
+      { status: 400 }
+    )
   }
 
   const result = await getPlatformSchool(authState, schoolId)
@@ -75,17 +103,21 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
   if (!result.ok) {
     return json<LoaderData>(
-      { error: result.error },
+      { currentUserRoles: authState.user.roles, error: result.error, isOwner: ownerSessionIsOwner },
       { status: result.status >= 400 ? result.status : 500, headers }
     )
   }
 
-  return json<LoaderData>({ school: result.data.school }, { headers })
+  return json<LoaderData>(
+    { currentUserRoles: result.authState.user.roles, isOwner: result.authState.user.roles.includes('PLATFORM_OWNER'), school: result.data.school },
+    { headers }
+  )
 }
 
 export async function action({ request, params }: ActionFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   const schoolId = params.schoolId
+  const ownerSessionIsOwner = isPlatformOwner(authState)
 
   if (!schoolId) {
     return json<ActionData>({ formError: 'School identifier is missing.' }, { status: 400 })
@@ -94,7 +126,20 @@ export async function action({ request, params }: ActionFunctionArgs) {
   const formData = await request.formData()
   const intent = String(formData.get('intent') ?? 'update-lifecycle').trim()
   const lifecycleAction = String(formData.get('action') ?? '').trim()
+  const selectedLifecycleAction = String(formData.get('selectedLifecycleAction') ?? lifecycleAction).trim()
   const note = String(formData.get('note') ?? '').trim()
+  const profileFields = {
+    schoolName: String(formData.get('schoolName') ?? '').trim(),
+    schoolIndex: String(formData.get('schoolIndex') ?? '').trim(),
+    country: String(formData.get('country') ?? '').trim(),
+    region: String(formData.get('region') ?? '').trim(),
+    mmd: String(formData.get('mmd') ?? '').trim(),
+    landmark: String(formData.get('landmark') ?? '').trim(),
+    phoneNumber: String(formData.get('phoneNumber') ?? '').trim(),
+    email: String(formData.get('email') ?? '').trim(),
+  }
+  const deleteConfirmation = String(formData.get('confirmSchoolName') ?? '').trim()
+  const expectedSchoolName = String(formData.get('expectedSchoolName') ?? '').trim()
 
   // This branch lets platform operators resend the approval/setup email without disturbing the selected lifecycle action on the review page.
   if (intent === 'resend-approval-email') {
@@ -113,9 +158,10 @@ export async function action({ request, params }: ActionFunctionArgs) {
     if (!result.ok) {
       return json<ActionData>(
         {
+          intent,
           formError: result.error,
           note,
-          selectedAction: lifecycleAction,
+          selectedAction: selectedLifecycleAction,
         },
         {
           status: result.status >= 400 ? result.status : 400,
@@ -126,11 +172,12 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
     return json<ActionData>(
       {
+        intent,
         formSuccess: result.data.message,
         school: result.data.school,
         note,
         selectedAction:
-          lifecycleAction ||
+          selectedLifecycleAction ||
           result.data.school.lifecycleState.availableActionOptions[0]?.action ||
           '',
       },
@@ -138,10 +185,120 @@ export async function action({ request, params }: ActionFunctionArgs) {
     )
   }
 
+  if (intent === 'update-profile') {
+    const parsedSchoolIndex = Number(profileFields.schoolIndex)
+
+    if (!Number.isFinite(parsedSchoolIndex) || parsedSchoolIndex <= 0) {
+      return json<ActionData>(
+        {
+          intent,
+          formError: 'Enter a valid school index before saving the profile.',
+          profileFields,
+          selectedAction: selectedLifecycleAction,
+        },
+        { status: 400 }
+      )
+    }
+
+    const result = await updatePlatformSchoolProfile(authState, schoolId, {
+      schoolName: profileFields.schoolName,
+      schoolIndex: parsedSchoolIndex,
+      country: profileFields.country,
+      region: profileFields.region,
+      mmd: profileFields.mmd,
+      landmark: profileFields.landmark,
+      phoneNumber: profileFields.phoneNumber,
+      email: ownerSessionIsOwner ? profileFields.email : undefined,
+    })
+
+    if (!result.ok && result.status === 401 && !result.authState) {
+      return redirect('/login', {
+        headers: {
+          'Set-Cookie': await clearPlatformAuthState(request),
+        },
+      })
+    }
+
+    const headers = await buildAuthHeaders(request, authState, result.authState)
+
+    if (!result.ok) {
+      return json<ActionData>(
+        {
+          intent,
+          formError: result.error,
+          profileFields,
+          selectedAction: selectedLifecycleAction,
+        },
+        {
+          status: result.status >= 400 ? result.status : 400,
+          headers,
+        }
+      )
+    }
+
+    return json<ActionData>(
+      {
+        intent,
+        formSuccess: result.data.message,
+        profileFields,
+        school: result.data.school,
+        selectedAction: selectedLifecycleAction || result.data.school.lifecycleState.availableActionOptions[0]?.action || '',
+      },
+      { headers }
+    )
+  }
+
+  if (intent === 'delete-school') {
+    if (deleteConfirmation !== expectedSchoolName) {
+      return json<ActionData>(
+        {
+          deleteConfirmation,
+          formError: 'Type the exact school name before deleting this rejected school.',
+          intent,
+          selectedAction: selectedLifecycleAction,
+        },
+        { status: 400 }
+      )
+    }
+
+    const result = await deleteRejectedPlatformSchool(authState, schoolId)
+
+    if (!result.ok && result.status === 401 && !result.authState) {
+      return redirect('/login', {
+        headers: {
+          'Set-Cookie': await clearPlatformAuthState(request),
+        },
+      })
+    }
+
+    const headers = await buildAuthHeaders(request, authState, result.authState)
+
+    if (!result.ok) {
+      return json<ActionData>(
+        {
+          deleteConfirmation,
+          formError: result.error,
+          intent,
+          selectedAction: selectedLifecycleAction,
+        },
+        {
+          status: result.status >= 400 ? result.status : 400,
+          headers,
+        }
+      )
+    }
+
+    const redirectParams = new URLSearchParams()
+    redirectParams.set('deletedSchool', result.data.schoolName || expectedSchoolName || 'School')
+
+    return redirect(`/schools?${redirectParams.toString()}`, { headers })
+  }
+
   if (!lifecycleAction) {
     return json<ActionData>(
       {
         formError: 'Choose a lifecycle action before submitting.',
+        intent,
         note,
         selectedAction: lifecycleAction,
       },
@@ -167,6 +324,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
   if (!result.ok) {
     return json<ActionData>(
       {
+        intent,
         formError: result.error,
         note,
         selectedAction: lifecycleAction,
@@ -180,6 +338,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
   return json<ActionData>(
     {
+      intent,
       formSuccess: result.data.message,
       school: result.data.school,
       note: '',
@@ -260,6 +419,7 @@ export default function SchoolDetailsRoute() {
   const loaderData = useLoaderData<typeof loader>()
   const actionData = useActionData<typeof action>()
   const navigation = useNavigation()
+  const isOwner = loaderData.isOwner
   const school = actionData?.school ?? loaderData.school
   const lifecycleOptions = school?.lifecycleState.availableActionOptions ?? []
   const actionSignature = lifecycleOptions.map((option) => option.action).join('|')
@@ -311,11 +471,13 @@ export default function SchoolDetailsRoute() {
     && Boolean(school?.activationState.needsInitialPasswordSetup)
     && school?.lifecycleState.stage !== 'suspended'
     && school?.lifecycleState.stage !== 'blacklisted'
+  const canDeleteRejectedSchool = Boolean(isOwner && school?.lifecycleState.stage === 'rejected')
   const feedbackIsApprovalEmail =
     (actionData?.formError?.toLowerCase().includes('approval email') ?? false) ||
     (actionData?.formError?.toLowerCase().includes('setup email') ?? false) ||
     (actionData?.formSuccess?.toLowerCase().includes('approval email') ?? false) ||
     (actionData?.formSuccess?.toLowerCase().includes('setup email') ?? false)
+  const feedbackIsProfileUpdate = actionData?.intent === 'update-profile'
 
   if (!school) {
     return (
@@ -389,7 +551,15 @@ export default function SchoolDetailsRoute() {
         {actionData?.formError ? (
           <FeedbackAlert
             tone="error"
-            title={feedbackIsApprovalEmail ? 'Approval email could not be sent' : 'Lifecycle update could not be saved'}
+            title={
+              feedbackIsProfileUpdate
+                ? 'School profile update could not be saved'
+                : feedbackIsApprovalEmail
+                  ? 'Approval email could not be sent'
+                  : actionData.intent === 'delete-school'
+                    ? 'Rejected school could not be deleted'
+                    : 'Lifecycle update could not be saved'
+            }
             message={actionData.formError}
           />
         ) : null}
@@ -397,7 +567,13 @@ export default function SchoolDetailsRoute() {
         {actionData?.formSuccess ? (
           <FeedbackAlert
             tone="success"
-            title={feedbackIsApprovalEmail ? 'Approval email sent' : 'Lifecycle updated'}
+            title={
+              feedbackIsProfileUpdate
+                ? 'School profile updated'
+                : feedbackIsApprovalEmail
+                  ? 'Approval email sent'
+                  : 'Lifecycle updated'
+            }
             message={actionData.formSuccess}
           />
         ) : null}
@@ -527,6 +703,7 @@ export default function SchoolDetailsRoute() {
                     {/* This hidden intent keeps the resend-approval action separate from lifecycle updates while reusing the same route action. */}
                     <input type="hidden" name="intent" value="resend-approval-email" />
                     <input type="hidden" name="action" value={selectedActionOption?.action ?? ''} />
+                    <input type="hidden" name="selectedLifecycleAction" value={selectedActionOption?.action ?? ''} />
                     <button
                       type="submit"
                       disabled={navigation.state === 'submitting'}
@@ -652,6 +829,187 @@ export default function SchoolDetailsRoute() {
                   </Form>
                 ) : null}
               </div>
+            )}
+          </article>
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+          <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
+            <h2 className="text-xl font-bold text-slate-950">Assist with school profile data</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Platform admins and owners can help clean up school profile details here. The school crest
+              stays read-only from this console, and only a platform owner can change the school email.
+            </p>
+
+            <Form method="post" action={`/schools/${school.id}`} className="mt-6 space-y-5">
+              <input type="hidden" name="intent" value="update-profile" />
+              <input type="hidden" name="selectedLifecycleAction" value={selectedActionOption?.action ?? ''} />
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">School name</span>
+                  <input
+                    name="schoolName"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'schoolName', school.schoolName)}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    required
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">School index</span>
+                  <input
+                    type="number"
+                    min="1"
+                    name="schoolIndex"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'schoolIndex', String(school.schoolIndex))}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    required
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Country</span>
+                  <input
+                    name="country"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'country', school.country)}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    required
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Region</span>
+                  <input
+                    name="region"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'region', school.region)}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    required
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Municipal district</span>
+                  <input
+                    name="mmd"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'mmd', school.mmd)}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    required
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Phone number</span>
+                  <input
+                    name="phoneNumber"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'phoneNumber', school.phoneNumber || '')}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    placeholder="Optional phone number"
+                  />
+                </label>
+
+                <label className="space-y-2 md:col-span-2">
+                  <span className="text-sm font-medium text-slate-700">Landmark</span>
+                  <input
+                    name="landmark"
+                    defaultValue={getSubmittedField(actionData, 'update-profile', 'landmark', school.landmark || '')}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                    placeholder="Optional landmark"
+                  />
+                </label>
+
+                {isOwner ? (
+                  <label className="space-y-2 md:col-span-2">
+                    <span className="text-sm font-medium text-slate-700">School email</span>
+                    <input
+                      type="email"
+                      name="email"
+                      defaultValue={getSubmittedField(actionData, 'update-profile', 'email', school.email)}
+                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                      required
+                    />
+                  </label>
+                ) : (
+                  <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4 md:col-span-2">
+                    <p className="text-sm font-semibold text-slate-900">School email</p>
+                    <p className="mt-2 text-sm text-slate-700">{school.email}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      Only a platform owner can change the school email.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold text-slate-900">School crest stays locked</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Schools keep control of their logo upload. Platform-side assistance here only covers
+                  profile and contact details.
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={navigation.state === 'submitting'}
+                className="inline-flex items-center justify-center rounded-2xl bg-emerald-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {pendingIntent === 'update-profile' ? 'Saving school profile...' : 'Save school profile'}
+              </button>
+            </Form>
+          </article>
+
+          <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
+            <h2 className="text-xl font-bold text-slate-950">Rejected-school deletion</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Only a platform owner can permanently delete a school, and only after the school has been
+              rejected. This wipe removes the school record and its platform-governance history.
+            </p>
+
+            {canDeleteRejectedSchool ? (
+              <div className="mt-6 space-y-5">
+                <FeedbackAlert
+                  tone="warning"
+                  title="Permanent deletion"
+                  message="This action is irreversible. Use it only when you are certain this rejected school should be removed completely from the platform."
+                />
+
+                <Form method="post" action={`/schools/${school.id}`} className="space-y-4">
+                  <input type="hidden" name="intent" value="delete-school" />
+                  <input type="hidden" name="selectedLifecycleAction" value={selectedActionOption?.action ?? ''} />
+                  <input type="hidden" name="expectedSchoolName" value={school.schoolName} />
+
+                  <label className="block space-y-2">
+                    <span className="text-sm font-medium text-slate-700">
+                      Type <span className="font-bold text-slate-950">{school.schoolName}</span> to confirm deletion
+                    </span>
+                    <input
+                      name="confirmSchoolName"
+                      defaultValue={actionData?.intent === 'delete-school' ? actionData.deleteConfirmation ?? '' : ''}
+                      className="w-full rounded-2xl border border-rose-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-rose-500"
+                      autoComplete="off"
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    disabled={navigation.state === 'submitting'}
+                    className="inline-flex items-center justify-center rounded-2xl bg-rose-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {pendingIntent === 'delete-school' ? 'Deleting rejected school...' : 'Delete rejected school'}
+                  </button>
+                </Form>
+              </div>
+            ) : (
+              <FeedbackAlert
+                tone="info"
+                title="Deletion unavailable"
+                message={
+                  isOwner
+                    ? 'This school can only be deleted after it reaches the rejected state.'
+                    : 'Only a platform owner can delete rejected schools from the platform.'
+                }
+                className="mt-6"
+              />
             )}
           </article>
         </section>

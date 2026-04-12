@@ -21,6 +21,16 @@ type PlatformSchoolResendApprovalEmailResponse = {
   school: PlatformSchoolDetails
 }
 
+type PlatformSchoolProfileUpdateResponse = {
+  message: string
+  school: PlatformSchoolDetails
+}
+
+type PlatformSchoolDeleteResponse = {
+  message: string
+  schoolName?: string
+}
+
 export function listPlatformSchools(
   authState: PlatformAuthPayload,
   filters?: { search?: string; stage?: string }
@@ -69,6 +79,43 @@ export function resendPlatformSchoolApprovalEmail(
     `/api/platform/schools/${schoolId}/resend-approval-email`,
     {
       method: 'POST',
+    }
+  )
+}
+
+export function updatePlatformSchoolProfile(
+  authState: PlatformAuthPayload,
+  schoolId: string,
+  payload: {
+    schoolName?: string
+    schoolIndex?: number
+    country?: string
+    region?: string
+    mmd?: string
+    landmark?: string
+    phoneNumber?: string
+    email?: string
+  }
+): Promise<PlatformApiResult<PlatformSchoolProfileUpdateResponse>> {
+  return callPlatformApi<PlatformSchoolProfileUpdateResponse>(
+    authState,
+    `/api/platform/schools/${schoolId}/profile`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
+export function deleteRejectedPlatformSchool(
+  authState: PlatformAuthPayload,
+  schoolId: string
+): Promise<PlatformApiResult<PlatformSchoolDeleteResponse>> {
+  return callPlatformApi<PlatformSchoolDeleteResponse>(
+    authState,
+    `/api/platform/schools/${schoolId}`,
+    {
+      method: 'DELETE',
     }
   )
 }
