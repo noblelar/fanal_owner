@@ -523,7 +523,7 @@ export default function SchoolDetailsRoute() {
                   Next step: {school.activationState.nextAction}
                 </p>
                 {showResendApprovalEmail ? (
-                  <Form method="post" className="mt-4">
+                  <Form method="post" action={`/schools/${school.id}`} className="mt-4">
                     {/* This hidden intent keeps the resend-approval action separate from lifecycle updates while reusing the same route action. */}
                     <input type="hidden" name="intent" value="resend-approval-email" />
                     <input type="hidden" name="action" value={selectedActionOption?.action ?? ''} />
@@ -589,7 +589,7 @@ export default function SchoolDetailsRoute() {
                 </div>
 
                 {selectedActionOption ? (
-                  <Form method="post" className="space-y-5">
+                  <Form method="post" action={`/schools/${school.id}`} className="space-y-5">
                     <input type="hidden" name="intent" value="update-lifecycle" />
                     <input type="hidden" name="action" value={selectedActionOption.action} />
 
