@@ -2,25 +2,29 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { loadLocalEnvFiles, logRelevantEnvVars } from './runtime-env.mjs'
 
-// This bootstraps the local .env files before the production Remix server starts.
 const loadedFiles = loadLocalEnvFiles()
-logRelevantEnvVars(process.env.NODE_ENV || 'production', loadedFiles)
 
-const remixServeCliPath = resolve(
+if (!process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'development'
+}
+
+logRelevantEnvVars('development', loadedFiles)
+
+const remixCliPath = resolve(
   process.cwd(),
   'node_modules',
   '@remix-run',
-  'serve',
+  'dev',
   'dist',
   'cli.js'
 )
 
-const serverProcess = spawn(process.execPath, [remixServeCliPath, './build/server/index.js'], {
+const devProcess = spawn(process.execPath, [remixCliPath, 'vite:dev'], {
   stdio: 'inherit',
   env: process.env,
 })
 
-serverProcess.on('exit', (code, signal) => {
+devProcess.on('exit', (code, signal) => {
   if (signal) {
     process.kill(process.pid, signal)
     return
