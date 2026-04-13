@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json, redirect } from '@remix-run/node'
 import { Form, Link, useLoaderData } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
+import { PlatformShell } from '~/components/platform-shell'
 import {
   listPlatformSchools,
 } from '~/utils/platform-schools.server'
@@ -120,32 +121,19 @@ export default function SchoolsRoute() {
   const { deletedSchoolName, error, schools, search, stage, total } = useLoaderData<typeof loader>()
 
   return (
-    <main className="min-h-screen bg-[linear-gradient(180deg,_#f5f1e7_0%,_#ffffff_35%,_#eef4f1_100%)] px-6 py-8 text-slate-900">
-      <div className="mx-auto max-w-6xl space-y-8">
-        <header className="flex flex-col gap-4 rounded-[2rem] border border-slate-200 bg-white p-8 shadow-[0_30px_90px_rgba(15,23,42,0.08)] md:flex-row md:items-end md:justify-between">
-          <div className="space-y-3">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-700">
-              School governance
-            </p>
-            <div>
-              <h1 className="text-4xl font-black tracking-tight text-slate-950">
-                Review school lifecycle states
-              </h1>
-              <p className="mt-2 max-w-3xl text-base leading-7 text-slate-600">
-                This console is now the platform-controlled place to approve schools, move them back
-                into review, suspend access, and reactivate tenants with a clear lifecycle trail.
-              </p>
-            </div>
-          </div>
-
-          <Link
-            to="/dashboard"
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-          >
-            Back to dashboard
-          </Link>
-        </header>
-
+    <PlatformShell
+      eyebrow="School governance"
+      title="School governance"
+      actions={
+        <Link
+          to="/dashboard"
+          className="inline-flex items-center justify-center rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+        >
+          Back to dashboard
+        </Link>
+      }
+    >
+      <div className="space-y-8">
         <section className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
           <Form method="get" className="grid gap-4 md:grid-cols-[1.5fr_1fr_auto]">
             <label className="space-y-2">
@@ -211,9 +199,6 @@ export default function SchoolsRoute() {
                   {total === 1 ? '1 school matches the current filter.' : `${total} schools match the current filter.`}
                 </p>
               </div>
-              <p className="text-sm text-slate-500">
-                Lifecycle decisions now live under platform authorization only.
-              </p>
             </div>
 
             {schools.length === 0 ? (
@@ -245,10 +230,6 @@ export default function SchoolsRoute() {
                             </span>
                           ) : null}
                         </div>
-
-                        <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                          {school.lifecycleState.statusMessage}
-                        </p>
 
                         <dl className="grid gap-3 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-4">
                           <div className="rounded-2xl bg-white px-4 py-3">
@@ -286,7 +267,7 @@ export default function SchoolsRoute() {
                           to={`/schools/${school.id}`}
                           className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
                         >
-                          Review school
+                          Open
                         </Link>
                       </div>
                     </div>
@@ -297,6 +278,6 @@ export default function SchoolsRoute() {
           </section>
         ) : null}
       </div>
-    </main>
+    </PlatformShell>
   )
 }

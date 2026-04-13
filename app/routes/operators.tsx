@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remi
 import { json, redirect } from '@remix-run/node'
 import { Form, Link, useActionData, useLoaderData, useNavigation } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
+import { PlatformShell } from '~/components/platform-shell'
 import type { PlatformOperator } from '~/models/platform-operator'
 import { didPlatformAuthChange } from '~/utils/platform-auth.server'
 import {
@@ -288,32 +289,19 @@ export default function OperatorsRoute() {
   const currentUserIsOwner = currentUserRoles.includes('PLATFORM_OWNER')
 
   return (
-    <main className="min-h-screen bg-[linear-gradient(180deg,_#f5f1e7_0%,_#ffffff_35%,_#eef4f1_100%)] px-6 py-8 text-slate-900">
-      <div className="mx-auto max-w-6xl space-y-8">
-        <header className="flex flex-col gap-4 rounded-[2rem] border border-slate-200 bg-white p-8 shadow-[0_30px_90px_rgba(15,23,42,0.08)] md:flex-row md:items-end md:justify-between">
-          <div className="space-y-3">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-700">
-              Platform operators
-            </p>
-            <div>
-              <h1 className="text-4xl font-black tracking-tight text-slate-950">
-                Manage owner and admin access
-              </h1>
-              <p className="mt-2 max-w-3xl text-base leading-7 text-slate-600">
-                Platform owners can add owners and admins. Platform admins can add and remove admins,
-                but they cannot create owners or elevate themselves.
-              </p>
-            </div>
-          </div>
-
-          <Link
-            to="/dashboard"
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-          >
-            Back to dashboard
-          </Link>
-        </header>
-
+    <PlatformShell
+      eyebrow="Platform operators"
+      title="Platform operators"
+      actions={
+        <Link
+          to="/dashboard"
+          className="inline-flex items-center justify-center rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+        >
+          Back to dashboard
+        </Link>
+      }
+    >
+      <div className="space-y-8">
         {error ? (
           <FeedbackAlert
             tone="error"
@@ -336,7 +324,7 @@ export default function OperatorsRoute() {
               <FeedbackAlert
                 tone="info"
                 title="Admin access mode"
-                message="You can create and remove platform admins here. Owner creation remains visible only to platform owners."
+                message="Owner creation is available to platform owners only."
               />
             ) : null}
 
@@ -344,9 +332,6 @@ export default function OperatorsRoute() {
               <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 md:flex-row md:items-end md:justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-slate-950">Current platform operators</h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    These accounts live completely outside school tenancy and govern the platform directly.
-                  </p>
                 </div>
                 <div className="flex flex-wrap gap-3 text-sm text-slate-500">
                   <span>{operators.length === 1 ? '1 operator account' : `${operators.length} operator accounts`}</span>
@@ -515,9 +500,6 @@ export default function OperatorsRoute() {
             <section className={`grid gap-6 ${isOwner ? 'lg:grid-cols-2' : ''}`}>
               <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
                 <h2 className="text-xl font-bold text-slate-950">Create platform admin</h2>
-                <p className="mt-3 text-sm leading-6 text-slate-600">
-                  Use this for people who should help manage the platform, but should not have owner-level authority. They will receive an email invite to create their own password.
-                </p>
 
                 {actionData?.intent === 'create_admin' && actionData.error ? (
                   <FeedbackAlert
@@ -584,9 +566,6 @@ export default function OperatorsRoute() {
               {isOwner ? (
                 <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
                   <h2 className="text-xl font-bold text-slate-950">Create platform owner</h2>
-                  <p className="mt-3 text-sm leading-6 text-slate-600">
-                    Only an existing platform owner can add another owner. Use this sparingly, because owner accounts carry ultimate authority. The invited owner will finish setup from email.
-                  </p>
 
                   {actionData?.intent === 'create_owner' && actionData.error ? (
                     <FeedbackAlert
@@ -659,22 +638,9 @@ export default function OperatorsRoute() {
               ) : null}
             </section>
 
-            <section className="rounded-[1.75rem] border border-amber-200 bg-amber-50 p-6 shadow-[0_20px_60px_rgba(245,158,11,0.08)]">
-              <h2 className="text-xl font-bold text-amber-950">Management rules</h2>
-              <ul className="mt-4 space-y-3 text-sm leading-6 text-amber-900">
-                <li>Only the CLI can bootstrap the very first platform owner.</li>
-                <li>Owners can invite other owners and invite admins.</li>
-                <li>Admins can invite and remove admins, but they cannot create owner accounts.</li>
-                <li>Invited operators create their own passwords from the email setup link before first login.</li>
-                <li>Your current admin session cannot remove itself from this console accidentally.</li>
-              </ul>
-              <p className="mt-4 text-xs font-medium uppercase tracking-[0.2em] text-amber-800">
-                Current roles: {currentUserRoles.join(', ')}
-              </p>
-            </section>
           </>
         )}
       </div>
-    </main>
+    </PlatformShell>
   )
 }

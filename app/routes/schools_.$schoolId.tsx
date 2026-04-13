@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json, redirect } from '@remix-run/node'
-import { Form, Link, useActionData, useLoaderData, useNavigation } from '@remix-run/react'
+import { Form, Link, useActionData, useLoaderData, useNavigation, useSearchParams } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
+import { PlatformShell } from '~/components/platform-shell'
 import type {
   PlatformSchoolDetails,
   PlatformSchoolLifecycleActionOption,
@@ -39,6 +40,8 @@ type ActionData = {
   school?: PlatformSchoolDetails
   selectedAction?: string
 }
+
+type SchoolDetailsSection = 'overview' | 'review' | 'profile' | 'audit' | 'danger'
 
 export const meta: MetaFunction<typeof loader> = ({ data }) => {
   const schoolName = data?.school?.schoolName ?? 'School review'
@@ -381,6 +384,12 @@ function formatAuditSource(source: string) {
   return source === 'legacy_review' ? 'Legacy review' : 'Platform lifecycle event'
 }
 
+function getAllowedSections(canDeleteRejectedSchool: boolean): SchoolDetailsSection[] {
+  return canDeleteRejectedSchool
+    ? ['overview', 'review', 'profile', 'audit', 'danger']
+    : ['overview', 'review', 'profile', 'audit']
+}
+
 // This helper keeps lifecycle action cards visually aligned with the tone metadata sent by the API.
 function getActionToneClasses(tone: string, selected: boolean) {
   const selectedClasses = selected ? 'ring-2 ring-offset-2 ring-offset-white' : ''
@@ -419,6 +428,7 @@ export default function SchoolDetailsRoute() {
   const loaderData = useLoaderData<typeof loader>()
   const actionData = useActionData<typeof action>()
   const navigation = useNavigation()
+  const [searchParams] = useSearchParams()
   const isOwner = loaderData.isOwner
   const school = actionData?.school ?? loaderData.school
   const lifecycleOptions = school?.lifecycleState.availableActionOptions ?? []
@@ -472,6 +482,27 @@ export default function SchoolDetailsRoute() {
     && school?.lifecycleState.stage !== 'suspended'
     && school?.lifecycleState.stage !== 'blacklisted'
   const canDeleteRejectedSchool = Boolean(isOwner && school?.lifecycleState.stage === 'rejected')
+  const allowedSections = getAllowedSections(canDeleteRejectedSchool)
+  const requestedSection = searchParams.get('section') as SchoolDetailsSection | null
+  const activeSection =
+    requestedSection && allowedSections.includes(requestedSection)
+      ? requestedSection
+      : 'overview'
+  const schoolPath = school ? `/schools/${school.id}` : '/schools'
+  const overviewUrl = `${schoolPath}?section=overview`
+  const reviewUrl = `${schoolPath}?section=review`
+  const profileUrl = `${schoolPath}?section=profile`
+  const auditUrl = `${schoolPath}?section=audit`
+  const dangerUrl = `${schoolPath}?section=danger`
+  const sectionItems: Array<{ id: SchoolDetailsSection; label: string; to: string }> = [
+    { id: 'overview', label: 'Overview', to: overviewUrl },
+    { id: 'review', label: 'Review', to: reviewUrl },
+    { id: 'profile', label: 'Profile', to: profileUrl },
+    { id: 'audit', label: 'Audit', to: auditUrl },
+  ]
+  if (canDeleteRejectedSchool) {
+    sectionItems.push({ id: 'danger', label: 'Danger', to: dangerUrl })
+  }
   const feedbackIsApprovalEmail =
     (actionData?.formError?.toLowerCase().includes('approval email') ?? false) ||
     (actionData?.formError?.toLowerCase().includes('setup email') ?? false) ||
@@ -481,65 +512,58 @@ export default function SchoolDetailsRoute() {
 
   if (!school) {
     return (
-      <main className="min-h-screen bg-[linear-gradient(180deg,_#f5f1e7_0%,_#ffffff_35%,_#eef4f1_100%)] px-6 py-8 text-slate-900">
-        <div className="mx-auto max-w-4xl space-y-6">
+      <PlatformShell
+        eyebrow="School review"
+        title="School unavailable"
+        actions={
           <Link
             to="/schools"
             className="inline-flex items-center justify-center rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
           >
             Back to schools
           </Link>
+        }
+      >
+        <div className="mx-auto max-w-4xl space-y-6">
           <FeedbackAlert
             tone="error"
             title="Unable to load school"
             message={loaderData.error || 'This school could not be loaded right now.'}
           />
         </div>
-      </main>
+      </PlatformShell>
     )
   }
 
   return (
-    <main className="min-h-screen bg-[linear-gradient(180deg,_#f5f1e7_0%,_#ffffff_35%,_#eef4f1_100%)] px-6 py-8 text-slate-900">
-      <div className="mx-auto max-w-6xl space-y-8">
-        <header className="flex flex-col gap-4 rounded-[2rem] border border-slate-200 bg-white p-8 shadow-[0_30px_90px_rgba(15,23,42,0.08)] md:flex-row md:items-end md:justify-between">
-          <div className="space-y-3">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-700">
-              School review
-            </p>
-            <div>
-              <div className="flex flex-wrap items-center gap-3">
-                <h1 className="text-4xl font-black tracking-tight text-slate-950">
-                  {school.schoolName}
-                </h1>
-                <span
-                  className={`rounded-full px-3 py-1 text-xs font-semibold ${getStageBadgeClass(school.lifecycleState.stage)}`}
-                >
-                  {school.lifecycleState.stageLabel}
-                </span>
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-800">
-                  {school.activationState.stageLabel}
-                </span>
-                {!school.emailConfirmed ? (
-                  <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-900">
-                    Email not verified
-                  </span>
-                ) : null}
-              </div>
-              <p className="mt-2 max-w-3xl text-base leading-7 text-slate-600">
-                {school.lifecycleState.statusMessage}
-              </p>
-            </div>
-          </div>
-
+    <PlatformShell
+      eyebrow="School review"
+      title={school.schoolName}
+      actions={
+        <>
+          <span
+            className={`rounded-full px-3 py-2 text-xs font-semibold ${getStageBadgeClass(school.lifecycleState.stage)}`}
+          >
+            {school.lifecycleState.stageLabel}
+          </span>
+          <span className="rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-800">
+            {school.activationState.stageLabel}
+          </span>
+          {!school.emailConfirmed ? (
+            <span className="rounded-full bg-rose-100 px-3 py-2 text-xs font-semibold text-rose-900">
+              Email not verified
+            </span>
+          ) : null}
           <Link
             to="/schools"
             className="inline-flex items-center justify-center rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
           >
             Back to schools
           </Link>
-        </header>
-
+        </>
+      }
+    >
+      <div className="space-y-8">
         {loaderData.error ? (
           <FeedbackAlert
             tone="error"
@@ -578,16 +602,37 @@ export default function SchoolDetailsRoute() {
           />
         ) : null}
 
-        <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="sticky top-[5.75rem] z-10 -mx-1 overflow-x-auto rounded-[1.5rem] border border-slate-200 bg-white/92 p-2 shadow-[0_18px_40px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+          <div className="flex min-w-max gap-2">
+            {sectionItems.map((item) => {
+              const isActive = item.id === activeSection
+
+              return (
+                <Link
+                  key={item.id}
+                  to={item.to}
+                  className={`inline-flex items-center justify-center rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
+                    isActive
+                      ? item.id === 'danger'
+                        ? 'bg-rose-700 text-white'
+                        : 'bg-emerald-900 text-white'
+                      : 'border border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 hover:text-slate-950'
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+
+        {activeSection === 'overview' ? (
+        <section className="mx-auto max-w-5xl">
           <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
             <h2 className="text-xl font-bold text-slate-950">School preview</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              Review the school&apos;s profile, onboarding readiness, and current platform state before
-              you decide to approve, reject, suspend, or reactivate it.
-            </p>
 
             {/* This crest card lets platform operators visually confirm the uploaded school identity before approving the application. */}
-            <div className="mt-6 grid gap-4 lg:grid-cols-[220px_1fr]">
+            <div className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
               <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
                   Uploaded crest
@@ -699,7 +744,7 @@ export default function SchoolDetailsRoute() {
                   Next step: {school.activationState.nextAction}
                 </p>
                 {showResendApprovalEmail ? (
-                  <Form method="post" action={`/schools/${school.id}`} className="mt-4">
+                  <Form method="post" action={overviewUrl} className="mt-4">
                     {/* This hidden intent keeps the resend-approval action separate from lifecycle updates while reusing the same route action. */}
                     <input type="hidden" name="intent" value="resend-approval-email" />
                     <input type="hidden" name="action" value={selectedActionOption?.action ?? ''} />
@@ -718,13 +763,13 @@ export default function SchoolDetailsRoute() {
               </div>
             </div>
           </article>
+        </section>
+        ) : null}
 
+        {activeSection === 'review' ? (
+        <section className="mx-auto max-w-4xl">
           <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
             <h2 className="text-xl font-bold text-slate-950">Review decision</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              Select one available lifecycle action, review the confirmation message, and attach any
-              internal note that should remain with the platform audit trail.
-            </p>
 
             {lifecycleOptions.length === 0 ? (
               <FeedbackAlert
@@ -766,7 +811,7 @@ export default function SchoolDetailsRoute() {
                 </div>
 
                 {selectedActionOption ? (
-                  <Form method="post" action={`/schools/${school.id}`} className="space-y-5">
+                  <Form method="post" action={reviewUrl} className="space-y-5">
                     <input type="hidden" name="intent" value="update-lifecycle" />
                     <input type="hidden" name="action" value={selectedActionOption.action} />
 
@@ -832,16 +877,14 @@ export default function SchoolDetailsRoute() {
             )}
           </article>
         </section>
+        ) : null}
 
-        <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+        {activeSection === 'profile' ? (
+        <section className="mx-auto max-w-5xl">
           <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
             <h2 className="text-xl font-bold text-slate-950">Assist with school profile data</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              Platform admins and owners can help clean up school profile details here. The school crest
-              stays read-only from this console, and only a platform owner can change the school email.
-            </p>
 
-            <Form method="post" action={`/schools/${school.id}`} className="mt-6 space-y-5">
+            <Form method="post" action={profileUrl} className="mt-6 space-y-5">
               <input type="hidden" name="intent" value="update-profile" />
               <input type="hidden" name="selectedLifecycleAction" value={selectedActionOption?.action ?? ''} />
 
@@ -933,19 +976,12 @@ export default function SchoolDetailsRoute() {
                   <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4 md:col-span-2">
                     <p className="text-sm font-semibold text-slate-900">School email</p>
                     <p className="mt-2 text-sm text-slate-700">{school.email}</p>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">
-                      Only a platform owner can change the school email.
-                    </p>
                   </div>
                 )}
               </div>
 
               <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm font-semibold text-slate-900">School crest stays locked</p>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Schools keep control of their logo upload. Platform-side assistance here only covers
-                  profile and contact details.
-                </p>
               </div>
 
               <button
@@ -957,13 +993,13 @@ export default function SchoolDetailsRoute() {
               </button>
             </Form>
           </article>
+        </section>
+        ) : null}
 
+        {activeSection === 'danger' ? (
+        <section className="mx-auto max-w-3xl">
           <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
             <h2 className="text-xl font-bold text-slate-950">Rejected-school deletion</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              Only a platform owner can permanently delete a school, and only after the school has been
-              rejected. This wipe removes the school record and its platform-governance history.
-            </p>
 
             {canDeleteRejectedSchool ? (
               <div className="mt-6 space-y-5">
@@ -973,7 +1009,7 @@ export default function SchoolDetailsRoute() {
                   message="This action is irreversible. Use it only when you are certain this rejected school should be removed completely from the platform."
                 />
 
-                <Form method="post" action={`/schools/${school.id}`} className="space-y-4">
+                <Form method="post" action={dangerUrl} className="space-y-4">
                   <input type="hidden" name="intent" value="delete-school" />
                   <input type="hidden" name="selectedLifecycleAction" value={selectedActionOption?.action ?? ''} />
                   <input type="hidden" name="expectedSchoolName" value={school.schoolName} />
@@ -1013,13 +1049,11 @@ export default function SchoolDetailsRoute() {
             )}
           </article>
         </section>
+        ) : null}
 
-        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
+        {activeSection === 'audit' ? (
+        <section className="mx-auto max-w-5xl rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
           <h2 className="text-xl font-bold text-slate-950">Platform audit trail</h2>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
-            Every platform lifecycle action now records a dedicated audit event with actor context, while
-            older legacy review notes remain visible so the full school history stays readable.
-          </p>
           {school.auditTrail.length === 0 ? (
             <FeedbackAlert
               tone="info"
@@ -1061,7 +1095,8 @@ export default function SchoolDetailsRoute() {
             </div>
           )}
         </section>
+        ) : null}
       </div>
-    </main>
+    </PlatformShell>
   )
 }
