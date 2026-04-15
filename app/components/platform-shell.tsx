@@ -33,6 +33,11 @@ const navItems: ShellNavItem[] = [
     label: 'Platform Operators',
     icon: OperatorsIcon,
   },
+  {
+    to: '/documentation',
+    label: 'Documentation',
+    icon: DocumentationIcon,
+  },
 ]
 
 export function PlatformShell({
@@ -194,6 +199,18 @@ function OperatorsIcon(props: SVGProps<SVGSVGElement>) {
       <circle cx="9.5" cy="7" r="3.5" />
       <path d="M20 8v6" />
       <path d="M17 11h6" />
+    </svg>
+  )
+}
+
+function DocumentationIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M6 4.5h9a3 3 0 0 1 3 3V19.5H9a3 3 0 0 0-3 3" />
+      <path d="M6 4.5v18" />
+      <path d="M9 8h6" />
+      <path d="M9 12h6" />
+      <path d="M9 16h4" />
     </svg>
   )
 }
