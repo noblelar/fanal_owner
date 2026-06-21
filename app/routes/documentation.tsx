@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json, redirect } from '@remix-run/node'
-import { Form, Link, useActionData, useLoaderData, useNavigation } from '@remix-run/react'
+import { Form, Link, useActionData, useBlocker, useLoaderData, useNavigation } from '@remix-run/react'
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, ReactNode } from 'react'
 import { FeedbackAlert } from '~/components/feedback-alert'
@@ -10,6 +10,7 @@ import type {
   PlatformDocumentationLibraryResponse,
 } from '~/models/platform-documentation'
 import {
+  discardDocumentationImageUpload,
   uploadDocumentationImageToCloudinary,
   type DocumentationImageUploadTarget,
 } from '~/utils/documentation-cloudinary.client'
@@ -17,6 +18,7 @@ import { didPlatformAuthChange, type PlatformSessionUser } from '~/utils/platfor
 import {
   addPlatformDocumentationStep,
   createPlatformDocumentationFlow,
+  deletePlatformDocumentationFlow,
   deletePlatformDocumentationStep,
   getPlatformDocumentationFlow,
   getPlatformDocumentationLibrary,
@@ -129,6 +131,8 @@ function getActionErrorTitle(intent?: string) {
       return 'Unable to reorder step'
     case 'delete_step':
       return 'Unable to remove step'
+    case 'delete_flow':
+      return 'Unable to delete flow'
     case 'publish_flow':
       return 'Unable to publish flow'
     case 'unpublish_flow':
@@ -305,6 +309,7 @@ export async function action({ request }: ActionFunctionArgs) {
     | Awaited<ReturnType<typeof updatePlatformDocumentationStep>>
     | Awaited<ReturnType<typeof reorderPlatformDocumentationSteps>>
     | Awaited<ReturnType<typeof deletePlatformDocumentationStep>>
+    | Awaited<ReturnType<typeof deletePlatformDocumentationFlow>>
     | null = null
 
   switch (intent) {
@@ -344,6 +349,8 @@ export async function action({ request }: ActionFunctionArgs) {
         videoMode: String(formData.get('videoMode') ?? '').trim(),
         youTubeUrl: String(formData.get('youTubeUrl') ?? ''),
         coverImageUrl: String(formData.get('coverImageUrl') ?? ''),
+        coverImageAssetId:
+          String(formData.get('coverImageAssetId') ?? '').trim() || undefined,
       })
       break
     }
@@ -371,6 +378,7 @@ export async function action({ request }: ActionFunctionArgs) {
         title: String(formData.get('title') ?? ''),
         body: String(formData.get('body') ?? ''),
         imageUrl: String(formData.get('imageUrl') ?? ''),
+        imageAssetId: String(formData.get('imageAssetId') ?? '').trim() || undefined,
         imageAlt: String(formData.get('imageAlt') ?? ''),
         imageCaption: String(formData.get('imageCaption') ?? ''),
       })
@@ -402,6 +410,17 @@ export async function action({ request }: ActionFunctionArgs) {
       }
 
       result = await deletePlatformDocumentationStep(authState, stepId)
+      break
+    }
+    case 'delete_flow': {
+      if (!flowId) {
+        return json<ActionData>(
+          { intent, error: 'Choose a documentation flow before deleting it.' },
+          { status: 400 }
+        )
+      }
+
+      result = await deletePlatformDocumentationFlow(authState, flowId)
       break
     }
     case 'publish_flow': {
@@ -460,9 +479,31 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (intent === 'create_flow') {
+    if (!('flow' in result.data)) {
+      return json<ActionData>({ intent, error: 'The created flow could not be loaded.' }, { status: 500 })
+    }
     return redirect(buildUrl(result.data.flow.sectionSlug, 'details', result.data.flow.id), {
       headers,
     })
+  }
+
+  if (intent === 'delete_flow') {
+    if (!('sectionSlug' in result.data)) {
+      return json<ActionData>({ intent, error: 'The deleted flow response was invalid.' }, { status: 500 })
+    }
+    return redirect(
+      buildUrl(
+        result.data.sectionSlug,
+        'overview',
+        null,
+        String(formData.get('currentSearch') ?? '').trim()
+      ),
+      { headers }
+    )
+  }
+
+  if (!('flow' in result.data)) {
+    return json<ActionData>({ intent, error: 'The documentation response was invalid.' }, { status: 500 })
   }
 
   const nextPanel =
@@ -497,6 +538,19 @@ export default function DocumentationRoute() {
     useLoaderData<typeof loader>()
   const actionData = useActionData<typeof action>()
   const navigation = useNavigation()
+  const [stepToDelete, setStepToDelete] = useState<
+    { id: string; stepNumber: number; title: string; hasImage: boolean } | null
+  >(null)
+  const [showFlowDelete, setShowFlowDelete] = useState(false)
+  const [flowDeleteConfirmation, setFlowDeleteConfirmation] = useState('')
+  const [pendingAssetIds, setPendingAssetIds] = useState<Set<string>>(() => new Set())
+  const pendingUploadBlocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      navigation.state === 'idle' &&
+      pendingAssetIds.size > 0 &&
+      `${currentLocation.pathname}${currentLocation.search}` !==
+        `${nextLocation.pathname}${nextLocation.search}`
+  )
   const activeSection =
     library.sections.find((section) => section.slug === library.activeSectionSlug) ?? null
   const pendingIntent =
@@ -508,6 +562,56 @@ export default function DocumentationRoute() {
       ? String(navigation.formData?.get('stepId') ?? '').trim()
       : ''
   const currentGroup = flow?.sectionSlug || library.activeSectionSlug || activeSection?.slug || 'overview'
+
+  function updatePendingAsset(previousAssetId?: string | null, nextAssetId?: string | null) {
+    setPendingAssetIds((current) => {
+      const next = new Set(current)
+      if (previousAssetId) next.delete(previousAssetId)
+      if (nextAssetId) next.add(nextAssetId)
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (pendingAssetIds.size === 0) return
+
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', warnBeforeUnload)
+    }
+  }, [pendingAssetIds])
+
+  useEffect(() => {
+    if (pendingUploadBlocker.state !== 'blocked') return
+    if (!window.confirm('Discard the uploaded image and leave without saving?')) {
+      pendingUploadBlocker.reset()
+      return
+    }
+
+    Promise.allSettled(
+      Array.from(pendingAssetIds).map((assetId) => discardDocumentationImageUpload(assetId))
+    ).finally(() => pendingUploadBlocker.proceed())
+  }, [pendingAssetIds, pendingUploadBlocker])
+
+  useEffect(() => {
+    if (!flow) return
+    const attachedAssetIds = new Set(
+      [flow.coverImageAssetId, ...flow.steps.map((step) => step.imageAssetId)].filter(
+        (assetId): assetId is string => Boolean(assetId)
+      )
+    )
+    if (attachedAssetIds.size === 0) return
+
+    setPendingAssetIds((current) => {
+      const next = new Set(current)
+      attachedAssetIds.forEach((assetId) => next.delete(assetId))
+      return next.size === current.size ? current : next
+    })
+  }, [flow])
 
   return (
     <PlatformShell
@@ -538,7 +642,9 @@ export default function DocumentationRoute() {
                 <button
                   type="submit"
                   disabled={
-                    pendingIntent === 'publish_flow' || pendingIntent === 'unpublish_flow'
+                    pendingIntent === 'publish_flow' ||
+                    pendingIntent === 'unpublish_flow' ||
+                    (!flow.isPublished && pendingAssetIds.size > 0)
                   }
                   className={`inline-flex items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold transition ${
                     flow.isPublished
@@ -582,6 +688,22 @@ export default function DocumentationRoute() {
             tone="error"
             title={getActionErrorTitle(actionData.intent)}
             message={actionData.error}
+          />
+        ) : null}
+
+        {flow?.isPublished ? (
+          <FeedbackAlert
+            tone="info"
+            title="Published and locked"
+            message="Move this flow to draft before changing its details, steps, media, or deleting it."
+          />
+        ) : null}
+
+        {pendingAssetIds.size > 0 ? (
+          <FeedbackAlert
+            tone="warning"
+            title="Uploaded image not saved"
+            message="Save the relevant flow or step to attach the upload. Leaving this page will discard it."
           />
         ) : null}
 
@@ -743,13 +865,14 @@ export default function DocumentationRoute() {
                     <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
                       <h2 className="text-xl font-bold text-slate-950">Flow details</h2>
 
-                      <Form method="post" className="mt-6 space-y-5">
+                      <Form method="post">
                         <input type="hidden" name="_intent" value="save_details" />
                         <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
                         <input type="hidden" name="currentPanel" value="details" />
                         <input type="hidden" name="currentFlowId" value={flow.id} />
                         <input type="hidden" name="currentSearch" value={search} />
 
+                        <fieldset disabled={flow.isPublished} className="mt-6 space-y-5">
                         <div className="grid gap-4 md:grid-cols-2">
                           <Field label="Section">
                             <select
@@ -814,7 +937,23 @@ export default function DocumentationRoute() {
                         >
                           {pendingIntent === 'save_details' ? 'Saving details...' : 'Save details'}
                         </button>
+                        </fieldset>
                       </Form>
+
+                      {!flow.isPublished ? (
+                        <div className="mt-8 border-t border-rose-100 pt-6">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFlowDeleteConfirmation('')
+                              setShowFlowDelete(true)
+                            }}
+                            className="rounded-2xl border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50"
+                          >
+                            Delete flow
+                          </button>
+                        </div>
+                      ) : null}
                     </article>
                   </section>
                 ) : null}
@@ -833,7 +972,7 @@ export default function DocumentationRoute() {
                           <input type="hidden" name="currentSearch" value={search} />
                           <button
                             type="submit"
-                            disabled={pendingIntent === 'add_step'}
+                            disabled={flow.isPublished || pendingIntent === 'add_step'}
                             className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-70"
                           >
                             {pendingIntent === 'add_step' ? 'Adding step...' : 'Add step'}
@@ -864,6 +1003,7 @@ export default function DocumentationRoute() {
                                 <input type="hidden" name="currentFlowId" value={flow.id} />
                                 <input type="hidden" name="currentSearch" value={search} />
                                 <input type="hidden" name="stepId" value={step.id} />
+                                <fieldset disabled={flow.isPublished}>
 
                                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                                   <div className="flex items-center gap-3">
@@ -895,9 +1035,15 @@ export default function DocumentationRoute() {
                                       {stepIsMovingDown ? 'Moving...' : 'Move down'}
                                     </button>
                                     <button
-                                      type="submit"
-                                      name="_intent"
-                                      value="delete_step"
+                                      type="button"
+                                      onClick={() =>
+                                        setStepToDelete({
+                                          id: step.id,
+                                          stepNumber: step.stepNumber,
+                                          title: step.title,
+                                          hasImage: Boolean(step.imageUrl),
+                                        })
+                                      }
                                       disabled={stepIsDeleting}
                                       className="rounded-xl border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
                                     >
@@ -928,7 +1074,10 @@ export default function DocumentationRoute() {
                                     <Field label="Step image" className="md:col-span-2">
                                       <DocumentationImageField
                                         initialUrl={step.imageUrl || ''}
+                                        initialAssetId={step.imageAssetId || ''}
                                         inputName="imageUrl"
+                                        assetInputName="imageAssetId"
+                                        onPendingAssetChange={updatePendingAsset}
                                         target={{
                                           kind: 'step-image',
                                           flowId: flow.id,
@@ -966,6 +1115,7 @@ export default function DocumentationRoute() {
                                     {stepIsSaving ? 'Saving step...' : 'Save step'}
                                   </button>
                                 </div>
+                                </fieldset>
                               </Form>
                             )
                           })}
@@ -984,13 +1134,14 @@ export default function DocumentationRoute() {
                     <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
                       <h2 className="text-xl font-bold text-slate-950">Media</h2>
 
-                      <Form method="post" className="mt-6 space-y-5">
+                      <Form method="post">
                         <input type="hidden" name="_intent" value="save_media" />
                         <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
                         <input type="hidden" name="currentPanel" value="media" />
                         <input type="hidden" name="currentFlowId" value={flow.id} />
                         <input type="hidden" name="currentSearch" value={search} />
 
+                        <fieldset disabled={flow.isPublished} className="mt-6 space-y-5">
                         <div className="grid gap-4 md:grid-cols-2">
                           <Field label="Video mode">
                             <select
@@ -1014,7 +1165,10 @@ export default function DocumentationRoute() {
                           <Field label="Cover image" className="md:col-span-2">
                             <DocumentationImageField
                               initialUrl={flow.coverImageUrl || ''}
+                              initialAssetId={flow.coverImageAssetId || ''}
                               inputName="coverImageUrl"
+                              assetInputName="coverImageAssetId"
+                              onPendingAssetChange={updatePendingAsset}
                               target={{ kind: 'flow-cover', flowId: flow.id }}
                             />
                           </Field>
@@ -1032,6 +1186,7 @@ export default function DocumentationRoute() {
                         >
                           {pendingIntent === 'save_media' ? 'Saving media...' : 'Save media'}
                         </button>
+                        </fieldset>
                       </Form>
                     </article>
                   </section>
@@ -1041,6 +1196,89 @@ export default function DocumentationRoute() {
           </>
         ) : null}
       </div>
+
+      {stepToDelete && flow ? (
+        <ConfirmationDialog
+          title={`Remove step ${stepToDelete.stepNumber}?`}
+          description={`${stepToDelete.title || 'Untitled step'}${
+            stepToDelete.hasImage ? ' has an attached image.' : '.'
+          } Remaining steps will be renumbered.`}
+          onClose={() => setStepToDelete(null)}
+        >
+          <Form
+            method="post"
+            className="flex flex-wrap justify-end gap-3"
+            onSubmit={() => setStepToDelete(null)}
+          >
+            <input type="hidden" name="_intent" value="delete_step" />
+            <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
+            <input type="hidden" name="currentPanel" value="steps" />
+            <input type="hidden" name="currentFlowId" value={flow.id} />
+            <input type="hidden" name="currentSearch" value={search} />
+            <input type="hidden" name="stepId" value={stepToDelete.id} />
+            <button
+              type="button"
+              onClick={() => setStepToDelete(null)}
+              className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={pendingIntent === 'delete_step'}
+              className="rounded-2xl bg-rose-700 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {pendingIntent === 'delete_step' ? 'Removing...' : 'Permanently remove step'}
+            </button>
+          </Form>
+        </ConfirmationDialog>
+      ) : null}
+
+      {showFlowDelete && flow ? (
+        <ConfirmationDialog
+          title="Delete this documentation flow?"
+          description={`This permanently removes “${flow.title}”, its ${flow.steps.length} step${
+            flow.steps.length === 1 ? '' : 's'
+          }, and its managed media. Type the flow title to confirm.`}
+          onClose={() => setShowFlowDelete(false)}
+        >
+          <Form
+            method="post"
+            className="space-y-4"
+            onSubmit={() => setShowFlowDelete(false)}
+          >
+            <input type="hidden" name="_intent" value="delete_flow" />
+            <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
+            <input type="hidden" name="currentPanel" value="details" />
+            <input type="hidden" name="currentFlowId" value={flow.id} />
+            <input type="hidden" name="currentSearch" value={search} />
+            <input
+              value={flowDeleteConfirmation}
+              onChange={(event) => setFlowDeleteConfirmation(event.target.value)}
+              placeholder={flow.title}
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-rose-500"
+            />
+            <div className="flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowFlowDelete(false)}
+                className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  flowDeleteConfirmation !== flow.title || pendingIntent === 'delete_flow'
+                }
+                className="rounded-2xl bg-rose-700 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pendingIntent === 'delete_flow' ? 'Deleting...' : 'Permanently delete flow'}
+              </button>
+            </div>
+          </Form>
+        </ConfirmationDialog>
+      ) : null}
     </PlatformShell>
   )
 }
@@ -1072,24 +1310,120 @@ function Chip({ children }: { children: ReactNode }) {
   )
 }
 
+function ConfirmationDialog({
+  title,
+  description,
+  onClose,
+  children,
+}: {
+  title: string
+  description: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const previousActiveElement = document.activeElement as HTMLElement | null
+    const dialog = dialogRef.current
+    const focusable = dialog?.querySelector<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+    focusable?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+
+      if (event.key !== 'Tab' || !dialog) return
+      const focusableElements = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      )
+      if (focusableElements.length === 0) return
+      const first = focusableElements[0]
+      const last = focusableElements[focusableElements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousActiveElement?.focus()
+    }
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="documentation-confirmation-title"
+        aria-describedby="documentation-confirmation-description"
+        className="w-full max-w-lg rounded-[1.75rem] bg-white p-6 shadow-2xl"
+      >
+        <h2 id="documentation-confirmation-title" className="text-xl font-bold text-slate-950">
+          {title}
+        </h2>
+        <p id="documentation-confirmation-description" className="mt-3 text-sm leading-6 text-slate-600">
+          {description}
+        </p>
+        <div className="mt-6">{children}</div>
+      </div>
+    </div>
+  )
+}
+
 function DocumentationImageField({
   initialUrl,
+  initialAssetId,
   inputName,
+  assetInputName,
   target,
+  onPendingAssetChange,
 }: {
   initialUrl: string
+  initialAssetId: string
   inputName: string
+  assetInputName: string
   target: DocumentationImageUploadTarget
+  onPendingAssetChange: (previousAssetId?: string | null, nextAssetId?: string | null) => void
 }) {
   const [value, setValue] = useState(initialUrl)
+  const [assetId, setAssetId] = useState(initialAssetId)
+  const [isPendingAsset, setIsPendingAsset] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     setValue(initialUrl)
+    setAssetId(initialAssetId)
+    setIsPendingAsset(false)
     setUploadError(null)
-  }, [initialUrl])
+  }, [initialAssetId, initialUrl])
+
+  function discardPendingAsset() {
+    if (!isPendingAsset || !assetId) return
+    const discardedAssetId = assetId
+    onPendingAssetChange(discardedAssetId, null)
+    setAssetId('')
+    setIsPendingAsset(false)
+    discardDocumentationImageUpload(discardedAssetId).catch(() => undefined)
+  }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -1104,7 +1438,14 @@ function DocumentationImageField({
 
     try {
       const result = await uploadDocumentationImageToCloudinary(file, target)
+      const previousPendingAssetId = isPendingAsset ? assetId : null
       setValue(result.secureUrl)
+      setAssetId(result.assetId)
+      setIsPendingAsset(true)
+      onPendingAssetChange(previousPendingAssetId, result.assetId)
+      if (previousPendingAssetId) {
+        discardDocumentationImageUpload(previousPendingAssetId).catch(() => undefined)
+      }
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : 'Upload failed.')
     } finally {
@@ -1153,7 +1494,11 @@ function DocumentationImageField({
           <>
             <button
               type="button"
-              onClick={() => setValue('')}
+              onClick={() => {
+                discardPendingAsset()
+                setValue('')
+                if (!isPendingAsset) setAssetId('')
+              }}
               className="inline-flex items-center justify-center rounded-2xl border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50"
             >
               Remove image
@@ -1174,10 +1519,22 @@ function DocumentationImageField({
       <input
         className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
         name={inputName}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => {
+          discardPendingAsset()
+          setAssetId('')
+          setValue(event.target.value)
+        }}
         placeholder="https://..."
         value={value}
       />
+
+      <input type="hidden" name={assetInputName} value={assetId} />
+
+      {isPendingAsset ? (
+        <p className="text-sm font-medium text-amber-700">
+          Uploaded — save this flow or step to attach the image.
+        </p>
+      ) : null}
 
       {uploadError ? <p className="text-sm text-rose-600">{uploadError}</p> : null}
     </div>

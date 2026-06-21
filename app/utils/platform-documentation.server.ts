@@ -14,6 +14,24 @@ type PlatformDocumentationFlowMutationResponse = {
   flow: PlatformDocumentationFlowDetails
 }
 
+export type PlatformDocumentationUploadResponse = {
+  assetId: string
+  uploadUrl: string
+  apiKey: string
+  timestamp: number
+  folder: string
+  publicId: string
+  signature: string
+  allowedFormats: string
+  expiresAt: string
+}
+
+type PlatformDocumentationFlowDeletionResponse = {
+  message: string
+  deletedFlowId: string
+  sectionSlug: string
+}
+
 export function getPlatformDocumentationLibrary(
   authState: PlatformAuthPayload,
   filters?: { section?: string; search?: string }
@@ -71,6 +89,7 @@ export function updatePlatformDocumentationFlow(
     description?: string
     routeHint?: string
     coverImageUrl?: string
+    coverImageAssetId?: string
     youTubeUrl?: string
     videoMode?: string
     estimatedReadMinutes?: number
@@ -140,6 +159,7 @@ export function updatePlatformDocumentationStep(
     title?: string
     body?: string
     imageUrl?: string
+    imageAssetId?: string
     imageAlt?: string
     imageCaption?: string
   }
@@ -179,5 +199,41 @@ export function deletePlatformDocumentationStep(
     {
       method: 'DELETE',
     }
+  )
+}
+
+export function deletePlatformDocumentationFlow(
+  authState: PlatformAuthPayload,
+  flowId: string
+): Promise<PlatformApiResult<PlatformDocumentationFlowDeletionResponse>> {
+  return callPlatformApi<PlatformDocumentationFlowDeletionResponse>(
+    authState,
+    `/api/platform/documentation/flows/${flowId}`,
+    { method: 'DELETE' }
+  )
+}
+
+export function createPlatformDocumentationUpload(
+  authState: PlatformAuthPayload,
+  payload: { kind: 'flow-cover' | 'step-image'; flowId: string; stepId?: string }
+): Promise<PlatformApiResult<PlatformDocumentationUploadResponse>> {
+  return callPlatformApi<PlatformDocumentationUploadResponse>(
+    authState,
+    '/api/platform/documentation/uploads',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
+export function discardPlatformDocumentationUpload(
+  authState: PlatformAuthPayload,
+  assetId: string
+): Promise<PlatformApiResult<{ message: string }>> {
+  return callPlatformApi<{ message: string }>(
+    authState,
+    `/api/platform/documentation/uploads/${assetId}`,
+    { method: 'DELETE' }
   )
 }

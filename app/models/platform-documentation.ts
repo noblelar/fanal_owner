@@ -25,6 +25,7 @@ export type PlatformDocumentationStep = {
   title: string
   body: string
   imageUrl?: string | null
+  imageAssetId?: string | null
   imageAlt?: string | null
   imageCaption?: string | null
 }
@@ -41,6 +42,7 @@ export type PlatformDocumentationFlowDetails = {
   description?: string | null
   routeHint?: string | null
   coverImageUrl?: string | null
+  coverImageAssetId?: string | null
   youTubeUrl?: string | null
   videoMode: string
   estimatedReadMinutes?: number | null
