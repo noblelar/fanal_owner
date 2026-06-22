@@ -29,6 +29,7 @@ export type PlatformApiResult<T> =
       ok: false
       status: number
       error: string
+      details?: unknown
       authState?: PlatformAuthPayload
     }
 
@@ -264,6 +265,7 @@ export async function callPlatformApi<T>(
       error:
         (isMessageBody(body) && typeof body.message === 'string' && body.message) ||
         'Unable to complete the platform request.',
+      details: body ?? undefined,
       authState: activeAuthState,
     }
   }

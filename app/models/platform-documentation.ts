@@ -14,6 +14,12 @@ export type PlatformDocumentationFlowSummary = {
   summary: string
   routeHint?: string | null
   isPublished: boolean
+  version: number
+  draftRevisionId?: string | null
+  publishedRevisionId?: string | null
+  draftVersionNumber?: number | null
+  publishedVersionNumber?: number | null
+  hasUnpublishedChanges: boolean
   sortOrder: number
   stepCount: number
   updatedAt: string
@@ -28,6 +34,7 @@ export type PlatformDocumentationStep = {
   imageAssetId?: string | null
   imageAlt?: string | null
   imageCaption?: string | null
+  version: number
 }
 
 export type PlatformDocumentationFlowDetails = {
@@ -48,6 +55,12 @@ export type PlatformDocumentationFlowDetails = {
   estimatedReadMinutes?: number | null
   sortOrder: number
   isPublished: boolean
+  version: number
+  draftRevisionId?: string | null
+  publishedRevisionId?: string | null
+  draftVersionNumber?: number | null
+  publishedVersionNumber?: number | null
+  hasUnpublishedChanges: boolean
   updatedAt: string
   steps: PlatformDocumentationStep[]
 }
@@ -56,4 +69,12 @@ export type PlatformDocumentationLibraryResponse = {
   activeSectionSlug: string
   sections: PlatformDocumentationSection[]
   flows: PlatformDocumentationFlowSummary[]
+}
+
+export type PlatformDocumentationPublishReadiness = {
+  flowId: string
+  draftRevisionId?: string | null
+  flowVersion: number
+  isReady: boolean
+  blockers: import('./platform-documentation-contracts').PlatformDocumentationPublishBlocker[]
 }

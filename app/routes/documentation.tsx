@@ -1,14 +1,29 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json, redirect } from '@remix-run/node'
 import { Form, Link, useActionData, useBlocker, useLoaderData, useNavigation } from '@remix-run/react'
+import type { ShouldRevalidateFunction } from '@remix-run/react'
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, ReactNode } from 'react'
+import {
+  DocumentationDirtyProvider,
+  useDocumentationDirtyState,
+  useDocumentationFlowDirtySummary,
+} from '~/components/documentation/documentation-dirty-provider'
+import { DocumentationEditorForm } from '~/components/documentation/documentation-editor-form'
+import { DocumentationEditorStatus } from '~/components/documentation/documentation-editor-status'
 import { FeedbackAlert } from '~/components/feedback-alert'
 import { PlatformShell } from '~/components/platform-shell'
 import type {
   PlatformDocumentationFlowDetails,
   PlatformDocumentationLibraryResponse,
+  PlatformDocumentationPublishReadiness,
 } from '~/models/platform-documentation'
+import type {
+  PlatformDocumentationError,
+  PlatformDocumentationPublishBlocker,
+  PlatformDocumentationRevision,
+} from '~/models/platform-documentation-contracts'
+import { documentationValidationRules } from '~/models/platform-documentation-contracts'
 import {
   discardDocumentationImageUpload,
   uploadDocumentationImageToCloudinary,
@@ -17,13 +32,18 @@ import {
 import { didPlatformAuthChange, type PlatformSessionUser } from '~/utils/platform-auth.server'
 import {
   addPlatformDocumentationStep,
+  createPlatformDocumentationDraft,
   createPlatformDocumentationFlow,
+  discardPlatformDocumentationDraft,
   deletePlatformDocumentationFlow,
   deletePlatformDocumentationStep,
   getPlatformDocumentationFlow,
   getPlatformDocumentationLibrary,
+  getPlatformDocumentationPublishReadiness,
+  getPlatformDocumentationRevisions,
   publishPlatformDocumentationFlow,
-  reorderPlatformDocumentationSteps,
+  rollbackPlatformDocumentationFlow,
+  setPlatformDocumentationStepOrder,
   unpublishPlatformDocumentationFlow,
   updatePlatformDocumentationFlow,
   updatePlatformDocumentationStep,
@@ -33,6 +53,10 @@ import {
   requirePlatformAuthState,
   savePlatformAuthState,
 } from '~/utils/session.server'
+import {
+  canPublishDocumentationDraft,
+  moveDocumentationStepIds,
+} from '~/utils/documentation-workflow-state'
 import { buildFanalMeta } from '~/utils/site-meta'
 
 const panels = [
@@ -50,17 +74,84 @@ type LoaderData = {
   flow: PlatformDocumentationFlowDetails | null
   library: PlatformDocumentationLibraryResponse
   panel: PanelId
+  readiness: PlatformDocumentationPublishReadiness | null
+  revisions: PlatformDocumentationRevision[]
   search: string
   selectedFlowId: string | null
   user: PlatformSessionUser
 }
 
 type ActionData = {
+  editorId?: string
+  editorSubmission?: boolean
   error?: string
   intent?: string
+  ok?: boolean
+  errorCode?: string
+  currentVersion?: number | null
+  fieldErrors?: Record<string, string[]>
+  publishBlockers?: PlatformDocumentationPublishBlocker[]
+  redirectTo?: string
+  submissionId?: string
 }
 
 export const meta: MetaFunction = () => buildFanalMeta('Documentation')
+
+const editorSaveIntents = new Set(['save_details', 'save_media', 'save_step'])
+
+function buildDocumentationActionData(
+  formData: FormData,
+  intent: string,
+  result: Pick<
+    ActionData,
+    | 'error'
+    | 'ok'
+    | 'redirectTo'
+    | 'errorCode'
+    | 'currentVersion'
+    | 'fieldErrors'
+    | 'publishBlockers'
+  >
+): ActionData {
+  const editorId = String(formData.get('_editorId') ?? '').trim()
+  const submissionId = String(formData.get('_submissionId') ?? '').trim()
+  const editorSubmission =
+    formData.get('_responseMode') === 'editor' && editorSaveIntents.has(intent)
+
+  return {
+    ...result,
+    intent,
+    editorId: editorId || undefined,
+    editorSubmission,
+    submissionId: submissionId || undefined,
+  }
+}
+
+function getDocumentationError(value: unknown): PlatformDocumentationError | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Partial<PlatformDocumentationError>
+  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') {
+    return null
+  }
+
+  return {
+    code: candidate.code,
+    message: candidate.message,
+    fieldErrors: candidate.fieldErrors ?? {},
+    publishBlockers: candidate.publishBlockers ?? [],
+    expectedVersion: candidate.expectedVersion,
+    currentVersion: candidate.currentVersion,
+  }
+}
+
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  actionResult,
+  defaultShouldRevalidate,
+}) => {
+  return (actionResult as ActionData | undefined)?.editorSubmission
+    ? false
+    : defaultShouldRevalidate
+}
 
 async function buildAuthHeaders(
   request: Request,
@@ -135,8 +226,14 @@ function getActionErrorTitle(intent?: string) {
       return 'Unable to delete flow'
     case 'publish_flow':
       return 'Unable to publish flow'
+    case 'create_draft':
+      return 'Unable to create draft'
+    case 'discard_draft':
+      return 'Unable to discard draft'
+    case 'rollback_flow':
+      return 'Unable to restore revision'
     case 'unpublish_flow':
-      return 'Unable to move flow to draft'
+      return 'Unable to withdraw flow'
     default:
       return 'Documentation update failed'
   }
@@ -144,6 +241,11 @@ function getActionErrorTitle(intent?: string) {
 
 function parseRequiredFlowId(formData: FormData) {
   return String(formData.get('currentFlowId') ?? '').trim()
+}
+
+function parseExpectedVersion(formData: FormData) {
+  const value = Number(formData.get('expectedVersion'))
+  return Number.isSafeInteger(value) && value > 0 ? value : null
 }
 
 function getReturnUrl(
@@ -187,6 +289,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
           flows: [],
         },
         panel,
+        readiness: null,
+        revisions: [],
         search,
         selectedFlowId: null,
         user: authState.user,
@@ -227,6 +331,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
           flows: [],
         },
         panel,
+        readiness: null,
+        revisions: [],
         search,
         selectedFlowId: null,
         user: activeAuthState.user,
@@ -242,6 +348,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       : library.flows[0]?.id ?? null
 
   let flow: PlatformDocumentationFlowDetails | null = null
+  let readiness: PlatformDocumentationPublishReadiness | null = null
+  let revisions: PlatformDocumentationRevision[] = []
   let error: string | undefined
 
   if (selectedFlowId) {
@@ -263,6 +371,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
       error = flowResult.error
     } else {
       flow = flowResult.data.flow
+
+      const revisionsResult = await getPlatformDocumentationRevisions(
+        activeAuthState,
+        selectedFlowId
+      )
+      if (revisionsResult.authState) activeAuthState = revisionsResult.authState
+      if (revisionsResult.ok) revisions = revisionsResult.data.revisions
+
+      const readinessResult = await getPlatformDocumentationPublishReadiness(
+        activeAuthState,
+        selectedFlowId
+      )
+      if (readinessResult.authState) activeAuthState = readinessResult.authState
+      if (readinessResult.ok) readiness = readinessResult.data
     }
   }
 
@@ -275,6 +397,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       flow,
       library,
       panel,
+      readiness,
+      revisions,
       search,
       selectedFlowId,
       user: activeAuthState.user,
@@ -285,29 +409,49 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 export async function action({ request }: ActionFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
+  const formData = await request.formData()
+  const intent = String(formData.get('_intent') ?? '').trim()
+  const isEditorSubmission =
+    formData.get('_responseMode') === 'editor' && editorSaveIntents.has(intent)
 
   if (!canManageDocumentation(authState.user)) {
     return json<ActionData>(
-      {
-        intent: 'forbidden',
+      buildDocumentationActionData(formData, intent || 'forbidden', {
+        ok: false,
         error: 'Only platform owners and platform admins can manage documentation.',
-      },
+      }),
       { status: 403 }
     )
   }
 
-  const formData = await request.formData()
-  const intent = String(formData.get('_intent') ?? '').trim()
+  if (
+    isEditorSubmission &&
+    (!String(formData.get('_editorId') ?? '').trim() ||
+      !String(formData.get('_submissionId') ?? '').trim())
+  ) {
+    return json<ActionData>(
+      buildDocumentationActionData(formData, intent, {
+        ok: false,
+        error: 'The editor save identity was missing. Please retry the save.',
+      }),
+      { status: 400 }
+    )
+  }
+
   const flowId = parseRequiredFlowId(formData)
+  const expectedVersion = parseExpectedVersion(formData)
 
   let result:
     | Awaited<ReturnType<typeof createPlatformDocumentationFlow>>
+    | Awaited<ReturnType<typeof createPlatformDocumentationDraft>>
+    | Awaited<ReturnType<typeof discardPlatformDocumentationDraft>>
     | Awaited<ReturnType<typeof updatePlatformDocumentationFlow>>
     | Awaited<ReturnType<typeof publishPlatformDocumentationFlow>>
     | Awaited<ReturnType<typeof unpublishPlatformDocumentationFlow>>
     | Awaited<ReturnType<typeof addPlatformDocumentationStep>>
     | Awaited<ReturnType<typeof updatePlatformDocumentationStep>>
-    | Awaited<ReturnType<typeof reorderPlatformDocumentationSteps>>
+    | Awaited<ReturnType<typeof setPlatformDocumentationStepOrder>>
+    | Awaited<ReturnType<typeof rollbackPlatformDocumentationFlow>>
     | Awaited<ReturnType<typeof deletePlatformDocumentationStep>>
     | Awaited<ReturnType<typeof deletePlatformDocumentationFlow>>
     | null = null
@@ -323,7 +467,10 @@ export async function action({ request }: ActionFunctionArgs) {
     case 'save_details': {
       if (!flowId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation flow before saving details.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before saving details.',
+          }),
           { status: 400 }
         )
       }
@@ -334,13 +481,17 @@ export async function action({ request }: ActionFunctionArgs) {
         title: String(formData.get('title') ?? ''),
         routeHint: String(formData.get('routeHint') ?? ''),
         summary: String(formData.get('summary') ?? ''),
+        expectedVersion: expectedVersion ?? undefined,
       })
       break
     }
     case 'save_media': {
       if (!flowId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation flow before saving media.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before saving media.',
+          }),
           { status: 400 }
         )
       }
@@ -351,25 +502,34 @@ export async function action({ request }: ActionFunctionArgs) {
         coverImageUrl: String(formData.get('coverImageUrl') ?? ''),
         coverImageAssetId:
           String(formData.get('coverImageAssetId') ?? '').trim() || undefined,
+        expectedVersion: expectedVersion ?? undefined,
       })
       break
     }
     case 'add_step': {
       if (!flowId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation flow before adding a step.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before adding a step.',
+          }),
           { status: 400 }
         )
       }
 
-      result = await addPlatformDocumentationStep(authState, flowId)
+      result = await addPlatformDocumentationStep(authState, flowId, {
+        expectedVersion: expectedVersion ?? undefined,
+      })
       break
     }
     case 'save_step': {
       const stepId = String(formData.get('stepId') ?? '').trim()
       if (!stepId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation step before saving.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation step before saving.',
+          }),
           { status: 400 }
         )
       }
@@ -381,6 +541,7 @@ export async function action({ request }: ActionFunctionArgs) {
         imageAssetId: String(formData.get('imageAssetId') ?? '').trim() || undefined,
         imageAlt: String(formData.get('imageAlt') ?? ''),
         imageCaption: String(formData.get('imageCaption') ?? ''),
+        expectedVersion: expectedVersion ?? undefined,
       })
       break
     }
@@ -389,14 +550,25 @@ export async function action({ request }: ActionFunctionArgs) {
       const stepId = String(formData.get('stepId') ?? '').trim()
       if (!flowId || !stepId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation step before reordering.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation step before reordering.',
+          }),
           { status: 400 }
         )
       }
 
-      result = await reorderPlatformDocumentationSteps(authState, flowId, {
-        stepId,
-        direction: intent === 'move_step_up' ? 'up' : 'down',
+      const orderedStepIds = String(
+        formData.get(
+          intent === 'move_step_up' ? 'orderedStepIdsUp' : 'orderedStepIdsDown'
+        ) ?? ''
+      )
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+      result = await setPlatformDocumentationStepOrder(authState, flowId, {
+        expectedVersion: expectedVersion ?? 0,
+        orderedStepIds,
       })
       break
     }
@@ -404,53 +576,134 @@ export async function action({ request }: ActionFunctionArgs) {
       const stepId = String(formData.get('stepId') ?? '').trim()
       if (!stepId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation step before removing it.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation step before removing it.',
+          }),
           { status: 400 }
         )
       }
 
-      result = await deletePlatformDocumentationStep(authState, stepId)
+      result = await deletePlatformDocumentationStep(
+        authState,
+        stepId,
+        expectedVersion ?? 0
+      )
       break
     }
     case 'delete_flow': {
       if (!flowId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation flow before deleting it.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before deleting it.',
+          }),
           { status: 400 }
         )
       }
 
-      result = await deletePlatformDocumentationFlow(authState, flowId)
+      result = await deletePlatformDocumentationFlow(
+        authState,
+        flowId,
+        expectedVersion ?? 0
+      )
       break
     }
     case 'publish_flow': {
       if (!flowId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation flow before publishing.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before publishing.',
+          }),
           { status: 400 }
         )
       }
 
-      result = await publishPlatformDocumentationFlow(authState, flowId)
+      result = await publishPlatformDocumentationFlow(
+        authState,
+        flowId,
+        expectedVersion ?? 0
+      )
+      break
+    }
+    case 'create_draft': {
+      if (!flowId) {
+        return json<ActionData>(
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before creating a draft.',
+          }),
+          { status: 400 }
+        )
+      }
+      result = await createPlatformDocumentationDraft(
+        authState,
+        flowId,
+        expectedVersion ?? 0
+      )
+      break
+    }
+    case 'discard_draft': {
+      if (!flowId) {
+        return json<ActionData>(
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before discarding a draft.',
+          }),
+          { status: 400 }
+        )
+      }
+      result = await discardPlatformDocumentationDraft(
+        authState,
+        flowId,
+        expectedVersion ?? 0
+      )
+      break
+    }
+    case 'rollback_flow': {
+      const revisionId = String(formData.get('revisionId') ?? '').trim()
+      if (!flowId || !revisionId) {
+        return json<ActionData>(
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a published revision before rolling back.',
+          }),
+          { status: 400 }
+        )
+      }
+      result = await rollbackPlatformDocumentationFlow(
+        authState,
+        flowId,
+        revisionId,
+        expectedVersion ?? 0
+      )
       break
     }
     case 'unpublish_flow': {
       if (!flowId) {
         return json<ActionData>(
-          { intent, error: 'Choose a documentation flow before moving it to draft.' },
+          buildDocumentationActionData(formData, intent, {
+            ok: false,
+            error: 'Choose a documentation flow before moving it to draft.',
+          }),
           { status: 400 }
         )
       }
 
-      result = await unpublishPlatformDocumentationFlow(authState, flowId)
+      result = await unpublishPlatformDocumentationFlow(
+        authState,
+        flowId,
+        expectedVersion ?? 0
+      )
       break
     }
     default:
       return json<ActionData>(
-        {
-          intent,
+        buildDocumentationActionData(formData, intent, {
+          ok: false,
           error: 'Choose a valid documentation action before submitting.',
-        },
+        }),
         { status: 400 }
       )
   }
@@ -466,11 +719,16 @@ export async function action({ request }: ActionFunctionArgs) {
   const headers = await buildAuthHeaders(request, authState, result.authState)
 
   if (!result.ok) {
+    const details = getDocumentationError(result.details)
     return json<ActionData>(
-      {
-        intent,
+      buildDocumentationActionData(formData, intent, {
+        ok: false,
         error: result.error,
-      },
+        errorCode: details?.code,
+        currentVersion: details?.currentVersion,
+        fieldErrors: details?.fieldErrors,
+        publishBlockers: details?.publishBlockers,
+      }),
       {
         headers,
         status: result.status >= 400 ? result.status : 400,
@@ -480,7 +738,13 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === 'create_flow') {
     if (!('flow' in result.data)) {
-      return json<ActionData>({ intent, error: 'The created flow could not be loaded.' }, { status: 500 })
+      return json<ActionData>(
+        buildDocumentationActionData(formData, intent, {
+          ok: false,
+          error: 'The created flow could not be loaded.',
+        }),
+        { status: 500 }
+      )
     }
     return redirect(buildUrl(result.data.flow.sectionSlug, 'details', result.data.flow.id), {
       headers,
@@ -489,7 +753,13 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === 'delete_flow') {
     if (!('sectionSlug' in result.data)) {
-      return json<ActionData>({ intent, error: 'The deleted flow response was invalid.' }, { status: 500 })
+      return json<ActionData>(
+        buildDocumentationActionData(formData, intent, {
+          ok: false,
+          error: 'The deleted flow response was invalid.',
+        }),
+        { status: 500 }
+      )
     }
     return redirect(
       buildUrl(
@@ -503,7 +773,13 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (!('flow' in result.data)) {
-    return json<ActionData>({ intent, error: 'The documentation response was invalid.' }, { status: 500 })
+    return json<ActionData>(
+      buildDocumentationActionData(formData, intent, {
+        ok: false,
+        error: 'The documentation response was invalid.',
+      }),
+      { status: 500 }
+    )
   }
 
   const nextPanel =
@@ -511,46 +787,65 @@ export async function action({ request }: ActionFunctionArgs) {
       ? 'details'
       : intent === 'save_media'
         ? 'media'
-        : intent === 'publish_flow' || intent === 'unpublish_flow'
+        : intent === 'publish_flow' ||
+            intent === 'unpublish_flow' ||
+            intent === 'create_draft' ||
+            intent === 'discard_draft' ||
+            intent === 'rollback_flow'
           ? getPanel(String(formData.get('currentPanel') ?? ''))
           : 'steps'
 
-  return redirect(
-    getReturnUrl(formData, {
-      group: result.data.flow.sectionSlug,
-      panel: nextPanel,
-      flowId: result.data.flow.id,
-    }),
-    { headers }
-  )
+  const redirectTo = getReturnUrl(formData, {
+    group: result.data.flow.sectionSlug,
+    panel: nextPanel,
+    flowId: result.data.flow.id,
+  })
+
+  if (isEditorSubmission) {
+    return json<ActionData>(
+      buildDocumentationActionData(formData, intent, {
+        ok: true,
+        redirectTo,
+      }),
+      { headers }
+    )
+  }
+
+  return redirect(redirectTo, { headers })
 }
 
 export default function DocumentationRoute() {
+  return (
+    <DocumentationDirtyProvider>
+      <DocumentationRouteContent />
+    </DocumentationDirtyProvider>
+  )
+}
+
+function DocumentationRouteContent() {
   const {
     canManageDocumentation,
     error,
     flow,
     library,
     panel,
+    readiness,
+    revisions,
     search,
     selectedFlowId,
   } =
     useLoaderData<typeof loader>()
   const actionData = useActionData<typeof action>()
   const navigation = useNavigation()
+  const { consumeNavigationPermit } = useDocumentationDirtyState()
   const [stepToDelete, setStepToDelete] = useState<
     { id: string; stepNumber: number; title: string; hasImage: boolean } | null
   >(null)
   const [showFlowDelete, setShowFlowDelete] = useState(false)
   const [flowDeleteConfirmation, setFlowDeleteConfirmation] = useState('')
   const [pendingAssetIds, setPendingAssetIds] = useState<Set<string>>(() => new Set())
-  const pendingUploadBlocker = useBlocker(
-    ({ currentLocation, nextLocation }) =>
-      navigation.state === 'idle' &&
-      pendingAssetIds.size > 0 &&
-      `${currentLocation.pathname}${currentLocation.search}` !==
-        `${nextLocation.pathname}${nextLocation.search}`
-  )
+  const [editorResetVersion, setEditorResetVersion] = useState(0)
+  const navigationDiscardInProgressRef = useRef(false)
   const activeSection =
     library.sections.find((section) => section.slug === library.activeSectionSlug) ?? null
   const pendingIntent =
@@ -562,6 +857,32 @@ export default function DocumentationRoute() {
       ? String(navigation.formData?.get('stepId') ?? '').trim()
       : ''
   const currentGroup = flow?.sectionSlug || library.activeSectionSlug || activeSection?.slug || 'overview'
+  const detailsEditorId = flow ? `flow-details:${flow.id}` : ''
+  const mediaEditorId = flow ? `flow-media:${flow.id}` : ''
+  const flowDirtySummary = useDocumentationFlowDirtySummary(flow?.id)
+  const hasUnsavedEditorChanges = flowDirtySummary.changedCount > 0
+  const hasUnresolvedDocumentationChanges =
+    hasUnsavedEditorChanges || pendingAssetIds.size > 0
+  const hasDraft = Boolean(flow?.draftRevisionId)
+  const canPublishDraft = canPublishDocumentationDraft({
+    hasDraft,
+    isReady: readiness?.isReady ?? false,
+    hasUnresolvedChanges: hasUnresolvedDocumentationChanges,
+  })
+  const navigationBlocker = useBlocker(({ currentLocation, nextLocation }) => {
+    const currentDestination = `${currentLocation.pathname}${currentLocation.search}`
+    const nextDestination = `${nextLocation.pathname}${nextLocation.search}`
+
+    if (consumeNavigationPermit(nextDestination)) return false
+
+    return (
+      hasUnresolvedDocumentationChanges && currentDestination !== nextDestination
+    )
+  })
+  const changedEditorSubject = `${flowDirtySummary.changedCount} editor${
+    flowDirtySummary.changedCount === 1 ? '' : 's'
+  }`
+  const changedEditorVerb = flowDirtySummary.changedCount === 1 ? 'has' : 'have'
 
   function updatePendingAsset(previousAssetId?: string | null, nextAssetId?: string | null) {
     setPendingAssetIds((current) => {
@@ -573,7 +894,7 @@ export default function DocumentationRoute() {
   }
 
   useEffect(() => {
-    if (pendingAssetIds.size === 0) return
+    if (!hasUnresolvedDocumentationChanges) return
 
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault()
@@ -583,19 +904,55 @@ export default function DocumentationRoute() {
     return () => {
       window.removeEventListener('beforeunload', warnBeforeUnload)
     }
-  }, [pendingAssetIds])
+  }, [hasUnresolvedDocumentationChanges])
 
   useEffect(() => {
-    if (pendingUploadBlocker.state !== 'blocked') return
-    if (!window.confirm('Discard the uploaded image and leave without saving?')) {
-      pendingUploadBlocker.reset()
+    if (navigationBlocker.state !== 'blocked') return
+    if (navigationDiscardInProgressRef.current) return
+
+    const warning =
+      flowDirtySummary.savingCount > 0
+        ? 'A documentation save is still in progress and may complete. Leave this page and discard any remaining changes?'
+        : pendingAssetIds.size > 0 && hasUnsavedEditorChanges
+          ? 'Discard the unsaved documentation changes and uploaded images, then leave this page?'
+          : pendingAssetIds.size > 0
+            ? 'Discard the uploaded images and leave this page without saving?'
+            : flowDirtySummary.failedCount > 0
+              ? 'The last save failed. Discard these unsaved documentation changes and leave this page?'
+              : 'Discard the unsaved documentation changes and leave this page?'
+
+    if (!window.confirm(warning)) {
+      navigationBlocker.reset()
+      return
+    }
+
+    navigationDiscardInProgressRef.current = true
+    const pendingIds = Array.from(pendingAssetIds)
+    const proceed = navigationBlocker.proceed
+    const proceedAfterDiscard = () => {
+      setPendingAssetIds(new Set())
+      setEditorResetVersion((current) => current + 1)
+      window.requestAnimationFrame(() => {
+        proceed()
+        navigationDiscardInProgressRef.current = false
+      })
+    }
+
+    if (pendingIds.length === 0) {
+      proceedAfterDiscard()
       return
     }
 
     Promise.allSettled(
-      Array.from(pendingAssetIds).map((assetId) => discardDocumentationImageUpload(assetId))
-    ).finally(() => pendingUploadBlocker.proceed())
-  }, [pendingAssetIds, pendingUploadBlocker])
+      pendingIds.map((assetId) => discardDocumentationImageUpload(assetId))
+    ).finally(proceedAfterDiscard)
+  }, [
+    flowDirtySummary.failedCount,
+    flowDirtySummary.savingCount,
+    hasUnsavedEditorChanges,
+    navigationBlocker,
+    pendingAssetIds,
+  ])
 
   useEffect(() => {
     if (!flow) return
@@ -625,40 +982,59 @@ export default function DocumentationRoute() {
               <input type="hidden" name="currentGroup" value={currentGroup} />
               <button
                 type="submit"
-                disabled={pendingIntent === 'create_flow'}
+                disabled={
+                  pendingIntent === 'create_flow' || hasUnresolvedDocumentationChanges
+                }
+                title={
+                  hasUnresolvedDocumentationChanges
+                    ? 'Save or discard the current changes before creating another flow.'
+                    : undefined
+                }
                 className="inline-flex items-center justify-center rounded-2xl bg-emerald-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {pendingIntent === 'create_flow' ? 'Creating flow...' : 'New flow'}
               </button>
             </Form>
 
-            {flow ? (
+            {flow && !hasDraft ? (
               <Form method="post">
-                <input type="hidden" name="_intent" value={flow.isPublished ? 'unpublish_flow' : 'publish_flow'} />
+                <input type="hidden" name="_intent" value="create_draft" />
                 <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
                 <input type="hidden" name="currentPanel" value={panel} />
                 <input type="hidden" name="currentFlowId" value={flow.id} />
                 <input type="hidden" name="currentSearch" value={search} />
+                <input type="hidden" name="expectedVersion" value={flow.version} />
                 <button
                   type="submit"
-                  disabled={
-                    pendingIntent === 'publish_flow' ||
-                    pendingIntent === 'unpublish_flow' ||
-                    (!flow.isPublished && pendingAssetIds.size > 0)
-                  }
-                  className={`inline-flex items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                    flow.isPublished
-                      ? 'border border-slate-300 text-slate-700 hover:border-slate-400 hover:bg-slate-50'
-                      : 'bg-slate-950 text-white hover:bg-slate-800'
-                  } disabled:cursor-not-allowed disabled:opacity-70`}
+                  disabled={pendingIntent === 'create_draft'}
+                  className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-70"
                 >
-                  {pendingIntent === 'publish_flow'
-                    ? 'Publishing...'
-                    : pendingIntent === 'unpublish_flow'
-                      ? 'Moving to draft...'
-                      : flow.isPublished
-                        ? 'Move to draft'
-                        : 'Publish'}
+                  {pendingIntent === 'create_draft' ? 'Creating draft...' : 'Create draft'}
+                </button>
+              </Form>
+            ) : null}
+
+            {flow && hasDraft ? (
+              <Form method="post">
+                <input type="hidden" name="_intent" value="publish_flow" />
+                <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
+                <input type="hidden" name="currentPanel" value={panel} />
+                <input type="hidden" name="currentFlowId" value={flow.id} />
+                <input type="hidden" name="currentSearch" value={search} />
+                <input type="hidden" name="expectedVersion" value={flow.version} />
+                <button
+                  type="submit"
+                  disabled={!canPublishDraft || pendingIntent === 'publish_flow'}
+                  title={
+                    hasUnresolvedDocumentationChanges
+                      ? 'Save all changes before publishing.'
+                      : readiness && !readiness.isReady
+                        ? 'Resolve every publish-readiness item first.'
+                        : undefined
+                  }
+                  className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {pendingIntent === 'publish_flow' ? 'Publishing...' : 'Publish draft'}
                 </button>
               </Form>
             ) : null}
@@ -691,12 +1067,67 @@ export default function DocumentationRoute() {
           />
         ) : null}
 
-        {flow?.isPublished ? (
+        {actionData?.errorCode === 'documentation_version_conflict' ? (
+          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            This flow is now at version {actionData.currentVersion ?? 'unknown'}. Reload the
+            latest version before retrying your changes.{' '}
+            <Link to={buildUrl(currentGroup, panel, flow?.id, search)} className="font-bold underline">
+              Reload latest
+            </Link>
+          </div>
+        ) : null}
+
+        {actionData?.fieldErrors && Object.keys(actionData.fieldErrors).length > 0 ? (
+          <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4">
+            <p className="text-sm font-bold text-rose-900">Check these fields</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-rose-800">
+              {Object.entries(actionData.fieldErrors).flatMap(([field, messages]) =>
+                messages.map((message) => <li key={`${field}:${message}`}>{message}</li>)
+              )}
+            </ul>
+          </div>
+        ) : null}
+
+        {actionData?.publishBlockers && actionData.publishBlockers.length > 0 ? (
+          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-bold text-amber-950">This draft is not ready to publish</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-900">
+              {actionData.publishBlockers.map((blocker) => (
+                <li key={`${blocker.code}:${blocker.field ?? blocker.stepId ?? ''}`}>
+                  {blocker.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {flow?.isPublished && flow.draftRevisionId ? (
           <FeedbackAlert
             tone="info"
-            title="Published and locked"
-            message="Move this flow to draft before changing its details, steps, media, or deleting it."
+            title="Editing a private draft"
+            message={`Published revision ${flow.publishedVersionNumber ?? ''} remains live while draft revision ${flow.draftVersionNumber ?? ''} is edited.`}
           />
+        ) : null}
+
+        {flow?.isPublished && !flow.draftRevisionId ? (
+          <FeedbackAlert
+            tone="info"
+            title="Published revision is live"
+            message="Create a draft to make changes without interrupting the public documentation."
+          />
+        ) : null}
+
+        {readiness && hasDraft && !readiness.isReady ? (
+          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-5">
+            <p className="text-sm font-bold text-amber-950">Publish readiness</p>
+            <ul className="mt-3 space-y-2 text-sm text-amber-900">
+              {readiness.blockers.map((blocker) => (
+                <li key={`${blocker.code}:${blocker.field ?? blocker.stepId ?? ''}`}>
+                  • {blocker.message}
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
 
         {pendingAssetIds.size > 0 ? (
@@ -704,6 +1135,30 @@ export default function DocumentationRoute() {
             tone="warning"
             title="Uploaded image not saved"
             message="Save the relevant flow or step to attach the upload. Leaving this page will discard it."
+          />
+        ) : null}
+
+        {flowDirtySummary.changedCount > 0 ? (
+          <FeedbackAlert
+            tone={
+              flowDirtySummary.failedCount > 0
+                ? 'error'
+                : flowDirtySummary.savingCount > 0
+                  ? 'info'
+                  : 'warning'
+            }
+            title={
+              flowDirtySummary.failedCount > 0
+                ? 'Documentation changes need attention'
+                : flowDirtySummary.savingCount > 0
+                  ? 'Saving documentation changes'
+                  : 'Unsaved documentation changes'
+            }
+            message={
+              flowDirtySummary.savingCount > 0
+                ? `${changedEditorSubject} ${changedEditorVerb} changes being saved or still unsaved. Publishing and navigation are paused.`
+                : `${changedEditorSubject} ${changedEditorVerb} changes that have not been saved. Save them before publishing or navigating away.`
+            }
           />
         ) : null}
 
@@ -804,7 +1259,11 @@ export default function DocumentationRoute() {
                               </p>
                             </div>
                             <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">
-                              {item.isPublished ? 'Published' : 'Draft'}
+                              {item.isPublished && item.hasUnpublishedChanges
+                                ? 'Published + draft'
+                                : item.isPublished
+                                  ? 'Published'
+                                  : 'Draft'}
                             </span>
                           </div>
                         </Link>
@@ -843,7 +1302,13 @@ export default function DocumentationRoute() {
                           <div className="mt-5 flex flex-wrap gap-2">
                             <Chip>{flow.sectionTitle}</Chip>
                             <Chip>{flow.audienceLabel || 'No audience'}</Chip>
-                            <Chip>{flow.isPublished ? 'Published' : 'Draft'}</Chip>
+                            <Chip>
+                              {flow.isPublished && flow.hasUnpublishedChanges
+                                ? 'Draft preview'
+                                : flow.isPublished
+                                  ? 'Published'
+                                  : 'Draft'}
+                            </Chip>
                           </div>
                         </div>
                         <div className="grid gap-4">
@@ -856,6 +1321,59 @@ export default function DocumentationRoute() {
                           <StatCard label="Updated" value={formatDate(flow.updatedAt)} />
                         </div>
                       </div>
+
+                      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+                        <div className="rounded-[1.5rem] border border-slate-200 p-5">
+                          <h3 className="text-sm font-bold text-slate-950">Publish readiness</h3>
+                          {readiness?.isReady ? (
+                            <p className="mt-3 text-sm text-emerald-700">Ready to publish.</p>
+                          ) : (
+                            <ul className="mt-3 space-y-2 text-sm text-slate-600">
+                              {(readiness?.blockers ?? []).map((blocker) => (
+                                <li key={`${blocker.code}:${blocker.field ?? blocker.stepId ?? ''}`}>
+                                  • {blocker.message}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div className="rounded-[1.5rem] border border-slate-200 p-5">
+                          <h3 className="text-sm font-bold text-slate-950">Revision history</h3>
+                          <div className="mt-3 space-y-3">
+                            {revisions.map((revision) => (
+                              <div key={revision.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-900">
+                                    Version {revision.versionNumber} · {revision.status}
+                                  </p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    {formatDate(revision.publishedAt || revision.updatedAt)}
+                                  </p>
+                                </div>
+                                {revision.status === 'superseded' && !hasDraft ? (
+                                  <Form method="post">
+                                    <input type="hidden" name="_intent" value="rollback_flow" />
+                                    <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
+                                    <input type="hidden" name="currentPanel" value="overview" />
+                                    <input type="hidden" name="currentFlowId" value={flow.id} />
+                                    <input type="hidden" name="currentSearch" value={search} />
+                                    <input type="hidden" name="expectedVersion" value={flow.version} />
+                                    <input type="hidden" name="revisionId" value={revision.id} />
+                                    <button
+                                      type="submit"
+                                      disabled={pendingIntent === 'rollback_flow'}
+                                      className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                                    >
+                                      Restore
+                                    </button>
+                                  </Form>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </article>
                   </section>
                 ) : null}
@@ -863,21 +1381,36 @@ export default function DocumentationRoute() {
                 {flow && panel === 'details' ? (
                   <section className="mx-auto max-w-5xl">
                     <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
-                      <h2 className="text-xl font-bold text-slate-950">Flow details</h2>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="text-xl font-bold text-slate-950">Flow details</h2>
+                        <DocumentationEditorStatus editorId={detailsEditorId} />
+                      </div>
 
-                      <Form method="post">
+                      <DocumentationEditorForm
+                        key={`${detailsEditorId}:${editorResetVersion}`}
+                        method="post"
+                        editorId={detailsEditorId}
+                        flowId={flow.id}
+                        label="Flow details"
+                        saveIntent="save_details"
+                      >
                         <input type="hidden" name="_intent" value="save_details" />
                         <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
                         <input type="hidden" name="currentPanel" value="details" />
                         <input type="hidden" name="currentFlowId" value={flow.id} />
                         <input type="hidden" name="currentSearch" value={search} />
+                        <input type="hidden" name="expectedVersion" value={flow.version} />
 
-                        <fieldset disabled={flow.isPublished} className="mt-6 space-y-5">
+                        <fieldset disabled={!hasDraft} className="mt-6 space-y-5">
                         <div className="grid gap-4 md:grid-cols-2">
                           <Field label="Section">
+                            {flow.publishedRevisionId ? (
+                              <input type="hidden" name="sectionSlug" value={flow.sectionSlug} />
+                            ) : null}
                             <select
                               name="sectionSlug"
                               defaultValue={flow.sectionSlug}
+                              disabled={Boolean(flow.publishedRevisionId)}
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                             >
                               {library.sections.map((section) => (
@@ -892,6 +1425,7 @@ export default function DocumentationRoute() {
                             <input
                               name="audienceLabel"
                               defaultValue={flow.audienceLabel || ''}
+                              maxLength={documentationValidationRules.audienceMaxLength}
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                             />
                           </Field>
@@ -900,6 +1434,8 @@ export default function DocumentationRoute() {
                             <input
                               name="title"
                               defaultValue={flow.title}
+                              maxLength={documentationValidationRules.titleMaxLength}
+                              required
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                             />
                           </Field>
@@ -908,6 +1444,7 @@ export default function DocumentationRoute() {
                             <input
                               name="routeHint"
                               defaultValue={flow.routeHint || ''}
+                              maxLength={documentationValidationRules.routeHintMaxLength}
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                             />
                           </Field>
@@ -915,7 +1452,13 @@ export default function DocumentationRoute() {
                           <Field label="Status">
                             <input
                               readOnly
-                              value={flow.isPublished ? 'Published' : 'Draft'}
+                              value={
+                                flow.isPublished && hasDraft
+                                  ? 'Published with private draft'
+                                  : flow.isPublished
+                                    ? 'Published'
+                                    : 'Draft'
+                              }
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none"
                             />
                           </Field>
@@ -925,6 +1468,8 @@ export default function DocumentationRoute() {
                               name="summary"
                               rows={5}
                               defaultValue={flow.summary}
+                              maxLength={documentationValidationRules.summaryMaxLength}
+                              required
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                             />
                           </Field>
@@ -938,7 +1483,51 @@ export default function DocumentationRoute() {
                           {pendingIntent === 'save_details' ? 'Saving details...' : 'Save details'}
                         </button>
                         </fieldset>
-                      </Form>
+                      </DocumentationEditorForm>
+
+                      {flow.publishedRevisionId && hasDraft ? (
+                        <Form
+                          method="post"
+                          className="mt-6 border-t border-slate-200 pt-6"
+                          onSubmit={(event) => {
+                            if (!window.confirm('Discard this draft and keep the published revision?')) {
+                              event.preventDefault()
+                            }
+                          }}
+                        >
+                          <input type="hidden" name="_intent" value="discard_draft" />
+                          <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
+                          <input type="hidden" name="currentPanel" value="details" />
+                          <input type="hidden" name="currentFlowId" value={flow.id} />
+                          <input type="hidden" name="currentSearch" value={search} />
+                          <input type="hidden" name="expectedVersion" value={flow.version} />
+                          <button
+                            type="submit"
+                            disabled={hasUnresolvedDocumentationChanges || pendingIntent === 'discard_draft'}
+                            className="rounded-2xl border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-800 disabled:opacity-50"
+                          >
+                            {pendingIntent === 'discard_draft' ? 'Discarding...' : 'Discard draft'}
+                          </button>
+                        </Form>
+                      ) : null}
+
+                      {flow.isPublished ? (
+                        <Form method="post" className="mt-4">
+                          <input type="hidden" name="_intent" value="unpublish_flow" />
+                          <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
+                          <input type="hidden" name="currentPanel" value="details" />
+                          <input type="hidden" name="currentFlowId" value={flow.id} />
+                          <input type="hidden" name="currentSearch" value={search} />
+                          <input type="hidden" name="expectedVersion" value={flow.version} />
+                          <button
+                            type="submit"
+                            disabled={pendingIntent === 'unpublish_flow'}
+                            className="rounded-2xl border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 disabled:opacity-50"
+                          >
+                            {pendingIntent === 'unpublish_flow' ? 'Withdrawing...' : 'Withdraw from public library'}
+                          </button>
+                        </Form>
+                      ) : null}
 
                       {!flow.isPublished ? (
                         <div className="mt-8 border-t border-rose-100 pt-6">
@@ -970,9 +1559,10 @@ export default function DocumentationRoute() {
                           <input type="hidden" name="currentPanel" value="steps" />
                           <input type="hidden" name="currentFlowId" value={flow.id} />
                           <input type="hidden" name="currentSearch" value={search} />
+                          <input type="hidden" name="expectedVersion" value={flow.version} />
                           <button
                             type="submit"
-                            disabled={flow.isPublished || pendingIntent === 'add_step'}
+                            disabled={!hasDraft || pendingIntent === 'add_step'}
                             className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-70"
                           >
                             {pendingIntent === 'add_step' ? 'Adding step...' : 'Add step'}
@@ -983,6 +1573,7 @@ export default function DocumentationRoute() {
                       {flow.steps.length > 0 ? (
                         <div className="mt-6 space-y-4">
                           {flow.steps.map((step, index) => {
+                            const stepEditorId = `flow-step:${step.id}`
                             const stepIsSaving =
                               pendingIntent === 'save_step' && pendingStepId === step.id
                             const stepIsMovingUp =
@@ -993,9 +1584,13 @@ export default function DocumentationRoute() {
                               pendingIntent === 'delete_step' && pendingStepId === step.id
 
                             return (
-                              <Form
-                                key={step.id}
+                              <DocumentationEditorForm
+                                key={`${step.id}:${editorResetVersion}`}
                                 method="post"
+                                editorId={stepEditorId}
+                                flowId={flow.id}
+                                label="Flow step"
+                                saveIntent="save_step"
                                 className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5"
                               >
                                 <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
@@ -1003,7 +1598,26 @@ export default function DocumentationRoute() {
                                 <input type="hidden" name="currentFlowId" value={flow.id} />
                                 <input type="hidden" name="currentSearch" value={search} />
                                 <input type="hidden" name="stepId" value={step.id} />
-                                <fieldset disabled={flow.isPublished}>
+                                <input type="hidden" name="expectedVersion" value={flow.version} />
+                                <input
+                                  type="hidden"
+                                  name="orderedStepIdsUp"
+                                  value={moveDocumentationStepIds(
+                                    flow.steps.map((item) => item.id),
+                                    index,
+                                    'up'
+                                  ).join(',')}
+                                />
+                                <input
+                                  type="hidden"
+                                  name="orderedStepIdsDown"
+                                  value={moveDocumentationStepIds(
+                                    flow.steps.map((item) => item.id),
+                                    index,
+                                    'down'
+                                  ).join(',')}
+                                />
+                                <fieldset disabled={!hasDraft}>
 
                                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                                   <div className="flex items-center gap-3">
@@ -1013,6 +1627,7 @@ export default function DocumentationRoute() {
                                     <p className="text-sm font-semibold text-slate-950">
                                       Step {step.stepNumber}
                                     </p>
+                                    <DocumentationEditorStatus editorId={stepEditorId} />
                                   </div>
 
                                   <div className="flex flex-wrap gap-2">
@@ -1020,6 +1635,7 @@ export default function DocumentationRoute() {
                                       type="submit"
                                       name="_intent"
                                       value="move_step_up"
+                                      formNoValidate
                                       disabled={index === 0 || stepIsMovingUp}
                                       className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
                                     >
@@ -1029,6 +1645,7 @@ export default function DocumentationRoute() {
                                       type="submit"
                                       name="_intent"
                                       value="move_step_down"
+                                      formNoValidate
                                       disabled={index === flow.steps.length - 1 || stepIsMovingDown}
                                       className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
                                     >
@@ -1057,6 +1674,8 @@ export default function DocumentationRoute() {
                                     <input
                                       name="title"
                                       defaultValue={step.title}
+                                      maxLength={documentationValidationRules.titleMaxLength}
+                                      required
                                       className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
                                     />
                                   </Field>
@@ -1066,6 +1685,8 @@ export default function DocumentationRoute() {
                                       name="body"
                                       rows={4}
                                       defaultValue={step.body}
+                                      maxLength={documentationValidationRules.stepBodyMaxLength}
+                                      required
                                       className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
                                     />
                                   </Field>
@@ -1073,6 +1694,7 @@ export default function DocumentationRoute() {
                                   <div className="grid gap-4 md:grid-cols-2">
                                     <Field label="Step image" className="md:col-span-2">
                                       <DocumentationImageField
+                                        editorId={stepEditorId}
                                         initialUrl={step.imageUrl || ''}
                                         initialAssetId={step.imageAssetId || ''}
                                         inputName="imageUrl"
@@ -1090,6 +1712,7 @@ export default function DocumentationRoute() {
                                       <input
                                         name="imageAlt"
                                         defaultValue={step.imageAlt || ''}
+                                        maxLength={documentationValidationRules.imageAltMaxLength}
                                         className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
                                       />
                                     </Field>
@@ -1098,6 +1721,7 @@ export default function DocumentationRoute() {
                                       <input
                                         name="imageCaption"
                                         defaultValue={step.imageCaption || ''}
+                                        maxLength={documentationValidationRules.imageCaptionMaxLength}
                                         className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
                                       />
                                     </Field>
@@ -1116,7 +1740,7 @@ export default function DocumentationRoute() {
                                   </button>
                                 </div>
                                 </fieldset>
-                              </Form>
+                              </DocumentationEditorForm>
                             )
                           })}
                         </div>
@@ -1132,16 +1756,27 @@ export default function DocumentationRoute() {
                 {flow && panel === 'media' ? (
                   <section className="mx-auto max-w-5xl">
                     <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
-                      <h2 className="text-xl font-bold text-slate-950">Media</h2>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="text-xl font-bold text-slate-950">Media</h2>
+                        <DocumentationEditorStatus editorId={mediaEditorId} />
+                      </div>
 
-                      <Form method="post">
+                      <DocumentationEditorForm
+                        key={`${mediaEditorId}:${editorResetVersion}`}
+                        method="post"
+                        editorId={mediaEditorId}
+                        flowId={flow.id}
+                        label="Flow media"
+                        saveIntent="save_media"
+                      >
                         <input type="hidden" name="_intent" value="save_media" />
                         <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
                         <input type="hidden" name="currentPanel" value="media" />
                         <input type="hidden" name="currentFlowId" value={flow.id} />
                         <input type="hidden" name="currentSearch" value={search} />
+                        <input type="hidden" name="expectedVersion" value={flow.version} />
 
-                        <fieldset disabled={flow.isPublished} className="mt-6 space-y-5">
+                        <fieldset disabled={!hasDraft} className="mt-6 space-y-5">
                         <div className="grid gap-4 md:grid-cols-2">
                           <Field label="Video mode">
                             <select
@@ -1156,14 +1791,18 @@ export default function DocumentationRoute() {
 
                           <Field label="YouTube link">
                             <input
+                              type="url"
                               name="youTubeUrl"
                               defaultValue={flow.youTubeUrl || ''}
+                              maxLength={documentationValidationRules.urlMaxLength}
+                              placeholder="https://www.youtube.com/watch?v=..."
                               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                             />
                           </Field>
 
                           <Field label="Cover image" className="md:col-span-2">
                             <DocumentationImageField
+                              editorId={mediaEditorId}
                               initialUrl={flow.coverImageUrl || ''}
                               initialAssetId={flow.coverImageAssetId || ''}
                               inputName="coverImageUrl"
@@ -1187,7 +1826,7 @@ export default function DocumentationRoute() {
                           {pendingIntent === 'save_media' ? 'Saving media...' : 'Save media'}
                         </button>
                         </fieldset>
-                      </Form>
+                      </DocumentationEditorForm>
                     </article>
                   </section>
                 ) : null}
@@ -1216,6 +1855,7 @@ export default function DocumentationRoute() {
             <input type="hidden" name="currentFlowId" value={flow.id} />
             <input type="hidden" name="currentSearch" value={search} />
             <input type="hidden" name="stepId" value={stepToDelete.id} />
+            <input type="hidden" name="expectedVersion" value={flow.version} />
             <button
               type="button"
               onClick={() => setStepToDelete(null)}
@@ -1251,6 +1891,7 @@ export default function DocumentationRoute() {
             <input type="hidden" name="currentGroup" value={flow.sectionSlug} />
             <input type="hidden" name="currentPanel" value="details" />
             <input type="hidden" name="currentFlowId" value={flow.id} />
+            <input type="hidden" name="expectedVersion" value={flow.version} />
             <input type="hidden" name="currentSearch" value={search} />
             <input
               value={flowDeleteConfirmation}
@@ -1388,6 +2029,7 @@ function ConfirmationDialog({
 }
 
 function DocumentationImageField({
+  editorId,
   initialUrl,
   initialAssetId,
   inputName,
@@ -1395,6 +2037,7 @@ function DocumentationImageField({
   target,
   onPendingAssetChange,
 }: {
+  editorId: string
   initialUrl: string
   initialAssetId: string
   inputName: string
@@ -1402,12 +2045,21 @@ function DocumentationImageField({
   target: DocumentationImageUploadTarget
   onPendingAssetChange: (previousAssetId?: string | null, nextAssetId?: string | null) => void
 }) {
+  const { refreshEditorFromForm } = useDocumentationDirtyState()
   const [value, setValue] = useState(initialUrl)
   const [assetId, setAssetId] = useState(initialAssetId)
   const [isPendingAsset, setIsPendingAsset] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const urlInputRef = useRef<HTMLInputElement | null>(null)
+
+  function refreshTrackedEditor() {
+    window.requestAnimationFrame(() => {
+      const form = urlInputRef.current?.form
+      if (form) refreshEditorFromForm(editorId, form)
+    })
+  }
 
   useEffect(() => {
     setValue(initialUrl)
@@ -1422,6 +2074,7 @@ function DocumentationImageField({
     onPendingAssetChange(discardedAssetId, null)
     setAssetId('')
     setIsPendingAsset(false)
+    refreshTrackedEditor()
     discardDocumentationImageUpload(discardedAssetId).catch(() => undefined)
   }
 
@@ -1443,6 +2096,7 @@ function DocumentationImageField({
       setAssetId(result.assetId)
       setIsPendingAsset(true)
       onPendingAssetChange(previousPendingAssetId, result.assetId)
+      refreshTrackedEditor()
       if (previousPendingAssetId) {
         discardDocumentationImageUpload(previousPendingAssetId).catch(() => undefined)
       }
@@ -1498,6 +2152,7 @@ function DocumentationImageField({
                 discardPendingAsset()
                 setValue('')
                 if (!isPendingAsset) setAssetId('')
+                refreshTrackedEditor()
               }}
               className="inline-flex items-center justify-center rounded-2xl border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50"
             >
@@ -1523,8 +2178,10 @@ function DocumentationImageField({
           discardPendingAsset()
           setAssetId('')
           setValue(event.target.value)
+          refreshTrackedEditor()
         }}
         placeholder="https://..."
+        ref={urlInputRef}
         value={value}
       />
 

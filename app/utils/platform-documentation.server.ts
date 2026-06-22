@@ -3,7 +3,12 @@ import { callPlatformApi } from '~/utils/platform-auth.server'
 import type {
   PlatformDocumentationFlowDetails,
   PlatformDocumentationLibraryResponse,
+  PlatformDocumentationPublishReadiness,
 } from '~/models/platform-documentation'
+import type {
+  PlatformDocumentationRevision,
+  PlatformDocumentationStepOrderRequest,
+} from '~/models/platform-documentation-contracts'
 
 type PlatformDocumentationFlowResponse = {
   flow: PlatformDocumentationFlowDetails
@@ -12,6 +17,10 @@ type PlatformDocumentationFlowResponse = {
 type PlatformDocumentationFlowMutationResponse = {
   message: string
   flow: PlatformDocumentationFlowDetails
+}
+
+type PlatformDocumentationRevisionResponse = {
+  revisions: PlatformDocumentationRevision[]
 }
 
 export type PlatformDocumentationUploadResponse = {
@@ -64,6 +73,26 @@ export function getPlatformDocumentationFlow(
   )
 }
 
+export function getPlatformDocumentationRevisions(
+  authState: PlatformAuthPayload,
+  flowId: string
+) {
+  return callPlatformApi<PlatformDocumentationRevisionResponse>(
+    authState,
+    `/api/platform/documentation/flows/${flowId}/revisions`
+  )
+}
+
+export function getPlatformDocumentationPublishReadiness(
+  authState: PlatformAuthPayload,
+  flowId: string
+) {
+  return callPlatformApi<PlatformDocumentationPublishReadiness>(
+    authState,
+    `/api/platform/documentation/flows/${flowId}/publish-readiness`
+  )
+}
+
 export function createPlatformDocumentationFlow(
   authState: PlatformAuthPayload,
   payload: { sectionSlug: string; title?: string }
@@ -93,6 +122,7 @@ export function updatePlatformDocumentationFlow(
     youTubeUrl?: string
     videoMode?: string
     estimatedReadMinutes?: number
+    expectedVersion?: number
   }
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
@@ -107,26 +137,73 @@ export function updatePlatformDocumentationFlow(
 
 export function publishPlatformDocumentationFlow(
   authState: PlatformAuthPayload,
-  flowId: string
+  flowId: string,
+  expectedVersion: number
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
     authState,
     `/api/platform/documentation/flows/${flowId}/publish`,
     {
       method: 'POST',
+      body: JSON.stringify({ expectedVersion }),
+    }
+  )
+}
+
+export function createPlatformDocumentationDraft(
+  authState: PlatformAuthPayload,
+  flowId: string,
+  expectedVersion: number
+): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
+  return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
+    authState,
+    `/api/platform/documentation/flows/${flowId}/draft`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ expectedVersion }),
+    }
+  )
+}
+
+export function discardPlatformDocumentationDraft(
+  authState: PlatformAuthPayload,
+  flowId: string,
+  expectedVersion: number
+): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
+  return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
+    authState,
+    `/api/platform/documentation/flows/${flowId}/draft?expectedVersion=${expectedVersion}`,
+    { method: 'DELETE' }
+  )
+}
+
+export function rollbackPlatformDocumentationFlow(
+  authState: PlatformAuthPayload,
+  flowId: string,
+  revisionId: string,
+  expectedVersion: number
+): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
+  return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
+    authState,
+    `/api/platform/documentation/flows/${flowId}/rollback`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ revisionId, expectedVersion }),
     }
   )
 }
 
 export function unpublishPlatformDocumentationFlow(
   authState: PlatformAuthPayload,
-  flowId: string
+  flowId: string,
+  expectedVersion: number
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
     authState,
     `/api/platform/documentation/flows/${flowId}/unpublish`,
     {
       method: 'POST',
+      body: JSON.stringify({ expectedVersion }),
     }
   )
 }
@@ -140,6 +217,7 @@ export function addPlatformDocumentationStep(
     imageUrl?: string
     imageAlt?: string
     imageCaption?: string
+    expectedVersion?: number
   }
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
@@ -162,6 +240,7 @@ export function updatePlatformDocumentationStep(
     imageAssetId?: string
     imageAlt?: string
     imageCaption?: string
+    expectedVersion?: number
   }
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
@@ -177,7 +256,7 @@ export function updatePlatformDocumentationStep(
 export function reorderPlatformDocumentationSteps(
   authState: PlatformAuthPayload,
   flowId: string,
-  payload: { stepId: string; direction: 'up' | 'down' }
+  payload: { stepId: string; direction: 'up' | 'down'; expectedVersion?: number }
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
     authState,
@@ -189,13 +268,29 @@ export function reorderPlatformDocumentationSteps(
   )
 }
 
-export function deletePlatformDocumentationStep(
+export function setPlatformDocumentationStepOrder(
   authState: PlatformAuthPayload,
-  stepId: string
+  flowId: string,
+  payload: PlatformDocumentationStepOrderRequest
 ): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
   return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
     authState,
-    `/api/platform/documentation/steps/${stepId}`,
+    `/api/platform/documentation/flows/${flowId}/steps/order`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
+export function deletePlatformDocumentationStep(
+  authState: PlatformAuthPayload,
+  stepId: string,
+  expectedVersion: number
+): Promise<PlatformApiResult<PlatformDocumentationFlowMutationResponse>> {
+  return callPlatformApi<PlatformDocumentationFlowMutationResponse>(
+    authState,
+    `/api/platform/documentation/steps/${stepId}?expectedVersion=${expectedVersion}`,
     {
       method: 'DELETE',
     }
@@ -204,11 +299,12 @@ export function deletePlatformDocumentationStep(
 
 export function deletePlatformDocumentationFlow(
   authState: PlatformAuthPayload,
-  flowId: string
+  flowId: string,
+  expectedVersion: number
 ): Promise<PlatformApiResult<PlatformDocumentationFlowDeletionResponse>> {
   return callPlatformApi<PlatformDocumentationFlowDeletionResponse>(
     authState,
-    `/api/platform/documentation/flows/${flowId}`,
+    `/api/platform/documentation/flows/${flowId}?expectedVersion=${expectedVersion}`,
     { method: 'DELETE' }
   )
 }
