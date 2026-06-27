@@ -57,6 +57,14 @@ import {
   canPublishDocumentationDraft,
   moveDocumentationStepIds,
 } from '~/utils/documentation-workflow-state'
+import {
+  createDocumentationActionData,
+  isDocumentationEditorSubmission,
+  parseDocumentationExpectedVersion,
+  parseDocumentationOrderedStepIds,
+  shouldRevalidateDocumentationRoute,
+} from '~/utils/documentation-route-state'
+import { shouldBlockDocumentationNavigation } from '~/utils/documentation-editor-state'
 import { buildFanalMeta } from '~/utils/site-meta'
 
 const panels = [
@@ -97,8 +105,6 @@ type ActionData = {
 
 export const meta: MetaFunction = () => buildFanalMeta('Documentation')
 
-const editorSaveIntents = new Set(['save_details', 'save_media', 'save_step'])
-
 function buildDocumentationActionData(
   formData: FormData,
   intent: string,
@@ -113,18 +119,7 @@ function buildDocumentationActionData(
     | 'publishBlockers'
   >
 ): ActionData {
-  const editorId = String(formData.get('_editorId') ?? '').trim()
-  const submissionId = String(formData.get('_submissionId') ?? '').trim()
-  const editorSubmission =
-    formData.get('_responseMode') === 'editor' && editorSaveIntents.has(intent)
-
-  return {
-    ...result,
-    intent,
-    editorId: editorId || undefined,
-    editorSubmission,
-    submissionId: submissionId || undefined,
-  }
+  return createDocumentationActionData(formData, intent, result) as ActionData
 }
 
 function getDocumentationError(value: unknown): PlatformDocumentationError | null {
@@ -148,9 +143,10 @@ export const shouldRevalidate: ShouldRevalidateFunction = ({
   actionResult,
   defaultShouldRevalidate,
 }) => {
-  return (actionResult as ActionData | undefined)?.editorSubmission
-    ? false
-    : defaultShouldRevalidate
+  return shouldRevalidateDocumentationRoute(
+    actionResult as ActionData | undefined,
+    defaultShouldRevalidate
+  )
 }
 
 async function buildAuthHeaders(
@@ -244,8 +240,7 @@ function parseRequiredFlowId(formData: FormData) {
 }
 
 function parseExpectedVersion(formData: FormData) {
-  const value = Number(formData.get('expectedVersion'))
-  return Number.isSafeInteger(value) && value > 0 ? value : null
+  return parseDocumentationExpectedVersion(formData)
 }
 
 function getReturnUrl(
@@ -411,8 +406,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   const formData = await request.formData()
   const intent = String(formData.get('_intent') ?? '').trim()
-  const isEditorSubmission =
-    formData.get('_responseMode') === 'editor' && editorSaveIntents.has(intent)
+  const isEditorSubmission = isDocumentationEditorSubmission(formData, intent)
 
   if (!canManageDocumentation(authState.user)) {
     return json<ActionData>(
@@ -558,14 +552,11 @@ export async function action({ request }: ActionFunctionArgs) {
         )
       }
 
-      const orderedStepIds = String(
+      const orderedStepIds = parseDocumentationOrderedStepIds(
         formData.get(
           intent === 'move_step_up' ? 'orderedStepIdsUp' : 'orderedStepIdsDown'
         ) ?? ''
       )
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean)
       result = await setPlatformDocumentationStepOrder(authState, flowId, {
         expectedVersion: expectedVersion ?? 0,
         orderedStepIds,
@@ -875,9 +866,12 @@ function DocumentationRouteContent() {
 
     if (consumeNavigationPermit(nextDestination)) return false
 
-    return (
-      hasUnresolvedDocumentationChanges && currentDestination !== nextDestination
-    )
+    return shouldBlockDocumentationNavigation({
+      hasUnresolvedChanges: hasUnresolvedDocumentationChanges,
+      currentDestination,
+      nextDestination,
+      isPermitted: false,
+    })
   })
   const changedEditorSubject = `${flowDirtySummary.changedCount} editor${
     flowDirtySummary.changedCount === 1 ? '' : 's'
@@ -1169,6 +1163,7 @@ function DocumentationRouteContent() {
                 {panels.map((item) => (
                   <Link
                     key={item.id}
+                    data-testid={`documentation-panel-${item.id}`}
                     to={buildUrl(currentGroup, item.id, selectedFlowId, search)}
                     className={`inline-flex items-center justify-center rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
                       item.id === panel
@@ -1388,6 +1383,7 @@ function DocumentationRouteContent() {
 
                       <DocumentationEditorForm
                         key={`${detailsEditorId}:${editorResetVersion}`}
+                        data-testid="documentation-flow-details-form"
                         method="post"
                         editorId={detailsEditorId}
                         flowId={flow.id}
@@ -1586,6 +1582,7 @@ function DocumentationRouteContent() {
                             return (
                               <DocumentationEditorForm
                                 key={`${step.id}:${editorResetVersion}`}
+                                data-testid={`documentation-step-${step.id}`}
                                 method="post"
                                 editorId={stepEditorId}
                                 flowId={flow.id}
@@ -1763,6 +1760,7 @@ function DocumentationRouteContent() {
 
                       <DocumentationEditorForm
                         key={`${mediaEditorId}:${editorResetVersion}`}
+                        data-testid="documentation-flow-media-form"
                         method="post"
                         editorId={mediaEditorId}
                         flowId={flow.id}
@@ -2127,6 +2125,7 @@ function DocumentationImageField({
         <input
           accept="image/*"
           className="sr-only"
+          data-testid={`documentation-image-input-${editorId}`}
           disabled={isUploading}
           onChange={handleFileChange}
           ref={fileInputRef}

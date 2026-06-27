@@ -8,7 +8,8 @@
     "dev": "node ./scripts/dev-with-env.mjs",
     "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
     "start": "node ./scripts/start-with-env.mjs",
-    "test:documentation": "node --test tests/documentation-workflow-state.test.mjs",
+    "test:documentation": "node --test tests/documentation-workflow-state.test.mjs tests/documentation-editor-state.test.mjs tests/documentation-route-state.test.mjs",
+    "test:documentation:e2e": "playwright test --config=playwright.config.mjs",
     "typecheck": "tsc"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@remix-run/dev": "^2.12.0",
     "@types/react": "^18.2.20",
     "@types/react-dom": "^18.2.7",

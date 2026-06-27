@@ -1,6 +1,16 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createDocumentationFormSnapshot } from '~/utils/documentation-form-snapshot'
+import {
+  createDocumentationNavigationPermit,
+  markDocumentationEditorFailed,
+  markDocumentationEditorSaved,
+  markDocumentationEditorSaving,
+  registerDocumentationEditor,
+  summarizeDocumentationFlowEditors,
+  unregisterDocumentationEditor,
+  updateDocumentationEditorSnapshot,
+} from '~/utils/documentation-editor-state'
 
 export type DocumentationEditorStatus = 'clean' | 'dirty' | 'saving' | 'failed'
 
@@ -40,55 +50,26 @@ type DocumentationDirtyContextValue = {
 const DocumentationDirtyContext = createContext<DocumentationDirtyContextValue | null>(null)
 
 export function DocumentationDirtyProvider({ children }: { children: ReactNode }) {
-  const permittedNavigationRef = useRef<string | null>(null)
+  const navigationPermitRef = useRef(createDocumentationNavigationPermit())
   const [editors, setEditors] = useState<Map<string, DocumentationEditorRecord>>(
     () => new Map()
   )
 
   const registerEditor = useCallback(
     (record: Omit<DocumentationEditorRecord, 'status'>) => {
-      setEditors((current) => {
-        const existing = current.get(record.editorId)
-        if (existing) return current
-
-        const next = new Map(current)
-        next.set(record.editorId, { ...record, status: 'clean' })
-        return next
-      })
+      setEditors((current) => registerDocumentationEditor(current, record))
     },
     []
   )
 
   const unregisterEditor = useCallback((editorId: string) => {
-    setEditors((current) => {
-      if (!current.has(editorId)) return current
-      const next = new Map(current)
-      next.delete(editorId)
-      return next
-    })
+    setEditors((current) => unregisterDocumentationEditor(current, editorId))
   }, [])
 
   const updateEditorSnapshot = useCallback((editorId: string, snapshot: string) => {
-    setEditors((current) => {
-      const existing = current.get(editorId)
-      if (!existing || existing.currentSnapshot === snapshot) return current
-      const next = new Map(current)
-      const isClean = snapshot === existing.baselineSnapshot
-      next.set(editorId, {
-        ...existing,
-        currentSnapshot: snapshot,
-        status: existing.status === 'saving' ? 'saving' : isClean ? 'clean' : 'dirty',
-        message:
-          existing.status === 'saving'
-            ? existing.message
-            : isClean
-              ? undefined
-              : existing.status === 'failed'
-                ? undefined
-                : existing.message,
-      })
-      return next
-    })
+    setEditors((current) =>
+      updateDocumentationEditorSnapshot(current, editorId, snapshot)
+    )
   }, [])
 
   const refreshEditorFromForm = useCallback(
@@ -100,81 +81,42 @@ export function DocumentationDirtyProvider({ children }: { children: ReactNode }
 
   const markEditorSaving = useCallback(
     (editorId: string, submissionId: string, submittedSnapshot: string) => {
-      setEditors((current) => {
-        const existing = current.get(editorId)
-        if (!existing) return current
-        const next = new Map(current)
-        next.set(editorId, {
-          ...existing,
-          activeSubmissionId: submissionId,
-          status: 'saving',
-          currentSnapshot: submittedSnapshot,
-          submittedSnapshot,
-          message: 'Saving changes...',
-        })
-        return next
-      })
+      setEditors((current) =>
+        markDocumentationEditorSaving(
+          current,
+          editorId,
+          submissionId,
+          submittedSnapshot
+        )
+      )
     },
     []
   )
 
   const markEditorSaved = useCallback(
     (editorId: string, submissionId: string, currentSnapshot: string) => {
-      setEditors((current) => {
-        const existing = current.get(editorId)
-        if (
-          !existing ||
-          !existing.submittedSnapshot ||
-          existing.activeSubmissionId !== submissionId
-        ) {
-          return current
-        }
-        const next = new Map(current)
-        const hasNewerChanges = currentSnapshot !== existing.submittedSnapshot
-        next.set(editorId, {
-          ...existing,
-          activeSubmissionId: undefined,
-          baselineSnapshot: existing.submittedSnapshot,
-          currentSnapshot,
-          submittedSnapshot: undefined,
-          status: hasNewerChanges ? 'dirty' : 'clean',
-          message: hasNewerChanges
-            ? 'Earlier changes saved; newer changes are unsaved.'
-            : 'Saved',
-        })
-        return next
-      })
+      setEditors((current) =>
+        markDocumentationEditorSaved(current, editorId, submissionId, currentSnapshot)
+      )
     },
     []
   )
 
   const markEditorFailed = useCallback(
     (editorId: string, submissionId: string, message: string) => {
-      setEditors((current) => {
-        const existing = current.get(editorId)
-        if (!existing || existing.activeSubmissionId !== submissionId) return current
-        const next = new Map(current)
-        next.set(editorId, {
-          ...existing,
-          activeSubmissionId: undefined,
-          status: 'failed',
-          submittedSnapshot: undefined,
-          message,
-        })
-        return next
-      })
+      setEditors((current) =>
+        markDocumentationEditorFailed(current, editorId, submissionId, message)
+      )
     },
     []
   )
 
   const permitNavigationTo = useCallback((destination: string) => {
-    permittedNavigationRef.current = destination
+    navigationPermitRef.current.permit(destination)
   }, [])
 
   const consumeNavigationPermit = useCallback((destination: string) => {
-    if (permittedNavigationRef.current !== destination) return false
-    permittedNavigationRef.current = null
-    return true
+    return navigationPermitRef.current.consume(destination)
   }, [])
 
   const value = useMemo<DocumentationDirtyContextValue>(
@@ -235,17 +177,6 @@ export function useDocumentationFlowDirtySummary(flowId?: string | null) {
       }
     }
 
-    const flowEditors = Array.from(editors.values()).filter(
-      (editor) => editor.flowId === flowId
-    )
-    const countStatus = (status: DocumentationEditorStatus) =>
-      flowEditors.filter((editor) => editor.status === status).length
-
-    return {
-      changedCount: flowEditors.filter((editor) => editor.status !== 'clean').length,
-      dirtyCount: countStatus('dirty'),
-      failedCount: countStatus('failed'),
-      savingCount: countStatus('saving'),
-    }
+    return summarizeDocumentationFlowEditors(editors, flowId)
   }, [editors, flowId])
 }

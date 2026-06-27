@@ -10,6 +10,22 @@ Run the dev server:
 npm run dev
 ```
 
+## Documentation regression tests
+
+Run the Owner documentation state and route-action tests:
+
+```shellscript
+npm run test:documentation
+```
+
+Run the isolated browser workflow suite. It starts the real Remix Owner app and a disposable in-memory platform API, so it does not require or modify a local database:
+
+```shellscript
+npm run test:documentation:e2e
+```
+
+On Windows the suite uses the installed Microsoft Edge browser. On other development or CI environments, install Playwright Chromium once with `npx playwright install chromium`.
+
 ## Deployment
 
 First, build your app for production:

@@ -2,4 +2,7 @@ node_modules
 
 /.cache
 /build
+/test-results
+/playwright-report
+/blob-report
 .env
