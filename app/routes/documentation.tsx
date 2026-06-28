@@ -3,7 +3,7 @@ import { json, redirect } from '@remix-run/node'
 import { Form, Link, useActionData, useBlocker, useLoaderData, useNavigation } from '@remix-run/react'
 import type { ShouldRevalidateFunction } from '@remix-run/react'
 import { useEffect, useRef, useState } from 'react'
-import type { ChangeEvent, ReactNode } from 'react'
+import type { ChangeEvent, ReactNode, RefObject } from 'react'
 import {
   DocumentationDirtyProvider,
   useDocumentationDirtyState,
@@ -836,6 +836,7 @@ function DocumentationRouteContent() {
   const [flowDeleteConfirmation, setFlowDeleteConfirmation] = useState('')
   const [pendingAssetIds, setPendingAssetIds] = useState<Set<string>>(() => new Set())
   const [editorResetVersion, setEditorResetVersion] = useState(0)
+  const flowDeleteConfirmationInputRef = useRef<HTMLInputElement | null>(null)
   const navigationDiscardInProgressRef = useRef(false)
   const activeSection =
     library.sections.find((section) => section.slug === library.activeSectionSlug) ?? null
@@ -1875,6 +1876,7 @@ function DocumentationRouteContent() {
       {showFlowDelete && flow ? (
         <ConfirmationDialog
           title="Delete this documentation flow?"
+          initialFocusRef={flowDeleteConfirmationInputRef}
           description={`This permanently removes “${flow.title}”, its ${flow.steps.length} step${
             flow.steps.length === 1 ? '' : 's'
           }, and its managed media. Type the flow title to confirm.`}
@@ -1891,11 +1893,23 @@ function DocumentationRouteContent() {
             <input type="hidden" name="currentFlowId" value={flow.id} />
             <input type="hidden" name="expectedVersion" value={flow.version} />
             <input type="hidden" name="currentSearch" value={search} />
+            <label
+              htmlFor="documentation-flow-delete-confirmation"
+              className="block text-sm font-semibold text-slate-700"
+            >
+              Type “{flow.title}” to confirm
+            </label>
             <input
+              ref={flowDeleteConfirmationInputRef}
+              id="documentation-flow-delete-confirmation"
               value={flowDeleteConfirmation}
               onChange={(event) => setFlowDeleteConfirmation(event.target.value)}
               placeholder={flow.title}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-rose-500"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              className="mt-2 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-rose-500"
             />
             <div className="flex flex-wrap justify-end gap-3">
               <button
@@ -1952,28 +1966,37 @@ function Chip({ children }: { children: ReactNode }) {
 function ConfirmationDialog({
   title,
   description,
+  initialFocusRef,
   onClose,
   children,
 }: {
   title: string
   description: string
+  initialFocusRef?: RefObject<HTMLElement>
   onClose: () => void
   children: ReactNode
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     const previousActiveElement = document.activeElement as HTMLElement | null
     const dialog = dialogRef.current
-    const focusable = dialog?.querySelector<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
+    const focusable =
+      initialFocusRef?.current ??
+      dialog?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
     focusable?.focus()
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        onCloseRef.current()
         return
       }
 
@@ -2000,7 +2023,7 @@ function ConfirmationDialog({
       document.removeEventListener('keydown', handleKeyDown)
       previousActiveElement?.focus()
     }
-  }, [onClose])
+  }, [initialFocusRef])
 
   return (
     <div

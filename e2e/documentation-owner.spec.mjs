@@ -112,6 +112,36 @@ test('uploads and attaches a cover image through the real Owner media flow', asy
   )
 })
 
+test('keeps flow deletion confirmation focused and restores focus after cancellation', async ({
+  page,
+}) => {
+  await openDocumentation(page, 'details')
+
+  const flowTitle = 'Owner guide draft'
+  const deleteFlowTrigger = page.getByRole('button', { name: 'Delete flow' })
+  await deleteFlowTrigger.click()
+
+  const dialog = page.getByRole('dialog')
+  const confirmation = dialog.getByLabel(`Type “${flowTitle}” to confirm`)
+  const deleteButton = dialog.getByRole('button', { name: 'Permanently delete flow' })
+
+  await expect(confirmation).toBeFocused()
+  await expect(deleteButton).toBeDisabled()
+
+  let enteredTitle = ''
+  for (const character of flowTitle) {
+    await page.keyboard.type(character)
+    enteredTitle += character
+    await expect(confirmation).toBeFocused()
+    await expect(confirmation).toHaveValue(enteredTitle)
+  }
+
+  await expect(deleteButton).toBeEnabled()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(deleteFlowTrigger).toBeFocused()
+})
+
 test('requires title confirmation before permanently deleting a draft flow', async ({ page }) => {
   await openDocumentation(page, 'overview')
 
@@ -120,10 +150,14 @@ test('requires title confirmation before permanently deleting a draft flow', asy
   await expect(page).toHaveURL(/section=details/)
 
   await page.getByRole('button', { name: 'Delete flow' }).click()
-  const confirmation = page.getByPlaceholder('Untitled documentation flow')
-  const deleteButton = page.getByRole('button', { name: 'Permanently delete flow' })
+  const dialog = page.getByRole('dialog')
+  const confirmation = dialog.getByLabel('Type “Untitled documentation flow” to confirm')
+  const deleteButton = dialog.getByRole('button', { name: 'Permanently delete flow' })
+  await expect(confirmation).toBeFocused()
   await expect(deleteButton).toBeDisabled()
-  await confirmation.fill('Untitled documentation flow')
+  await confirmation.pressSequentially('Untitled documentation flow')
+  await expect(confirmation).toBeFocused()
+  await expect(confirmation).toHaveValue('Untitled documentation flow')
   await expect(deleteButton).toBeEnabled()
   await deleteButton.click()
 
