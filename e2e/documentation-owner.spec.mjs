@@ -33,14 +33,15 @@ test('protects unsaved authoring, reports a failed save, and acknowledges a retr
   await expect(status).toHaveText('Unsaved changes')
   await expect(page.getByRole('button', { name: 'Publish draft' })).toBeDisabled()
 
-  let navigationWarning = ''
-  page.once('dialog', async (dialog) => {
-    navigationWarning = dialog.message()
-    await dialog.dismiss()
-  })
-  await page.getByTestId('documentation-panel-steps').click()
-  await expect(page).toHaveURL(/section=details/)
-  expect(navigationWarning).toContain('Discard the unsaved documentation changes')
+  const detailsUrl = page.url()
+  const dialogPromise = page.waitForEvent('dialog')
+  const clickPromise = page.getByTestId('documentation-panel-steps').click()
+  const dialog = await dialogPromise
+
+  expect(dialog.message()).toContain('Discard the unsaved documentation changes')
+  await dialog.dismiss()
+  await clickPromise
+  await expect(page).toHaveURL(detailsUrl)
 
   await form.getByRole('button', { name: 'Save details' }).click()
   await expect(status).toHaveText('Save failed')
