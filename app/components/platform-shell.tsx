@@ -38,6 +38,11 @@ const navItems: ShellNavItem[] = [
     icon: OperatorsIcon,
   },
   {
+    to: '/announcements',
+    label: 'Announcements',
+    icon: AnnouncementsIcon,
+  },
+  {
     to: '/documentation',
     label: 'Documentation',
     icon: DocumentationIcon,
@@ -383,6 +388,16 @@ function OperatorsIcon(props: SVGProps<SVGSVGElement>) {
       <circle cx="9.5" cy="7" r="3.5" />
       <path d="M20 8v6" />
       <path d="M17 11h6" />
+    </svg>
+  )
+}
+
+function AnnouncementsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M4 11V8a3 3 0 0 1 3-3h1l9-2v18l-9-2H7a3 3 0 0 1-3-3v-3" />
+      <path d="M8 5v14" />
+      <path d="M20 9v6" />
     </svg>
   )
 }
