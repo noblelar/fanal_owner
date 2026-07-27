@@ -107,7 +107,7 @@ export function updatePlatformSchoolProfile(
   )
 }
 
-export function deleteRejectedPlatformSchool(
+export function deletePlatformSchool(
   authState: PlatformAuthPayload,
   schoolId: string
 ): Promise<PlatformApiResult<PlatformSchoolDeleteResponse>> {

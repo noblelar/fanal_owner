@@ -83,6 +83,12 @@ export type PlatformSchoolAuditEntry = {
 
 export type PlatformSchoolDetails = PlatformSchoolSummary & {
   phoneNumberConfirmed: boolean
+  deletionEligibility: {
+    canDelete: boolean
+    attachedUserCount: number
+    reasonCode: string
+    message: string
+  }
   auditTrail: PlatformSchoolAuditEntry[]
 }
 

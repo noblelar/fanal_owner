@@ -185,7 +185,7 @@ export default function SchoolsRoute() {
         {deletedSchoolName ? (
           <FeedbackAlert
             tone="success"
-            title="Rejected school deleted"
+            title="School deleted"
             message={`${deletedSchoolName} was removed from the platform successfully.`}
           />
         ) : null}

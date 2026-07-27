@@ -10,7 +10,7 @@ import type {
 } from '~/models/platform-school'
 import { didPlatformAuthChange } from '~/utils/platform-auth.server'
 import {
-  deleteRejectedPlatformSchool,
+  deletePlatformSchool,
   getPlatformSchool,
   resendPlatformSchoolApprovalEmail,
   updatePlatformSchoolProfile,
@@ -256,7 +256,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
       return json<ActionData>(
         {
           deleteConfirmation,
-          formError: 'Type the exact school name before deleting this rejected school.',
+          formError: 'Type the exact school name before permanently deleting this school.',
           intent,
           selectedAction: selectedLifecycleAction,
         },
@@ -264,7 +264,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
       )
     }
 
-    const result = await deleteRejectedPlatformSchool(authState, schoolId)
+    const result = await deletePlatformSchool(authState, schoolId)
 
     if (!result.ok && result.status === 401 && !result.authState) {
       return redirect('/login', {
@@ -384,8 +384,8 @@ function formatAuditSource(source: string) {
   return source === 'legacy_review' ? 'Legacy review' : 'Platform lifecycle event'
 }
 
-function getAllowedSections(canDeleteRejectedSchool: boolean): SchoolDetailsSection[] {
-  return canDeleteRejectedSchool
+function getAllowedSections(showDeletionSection: boolean): SchoolDetailsSection[] {
+  return showDeletionSection
     ? ['overview', 'review', 'profile', 'audit', 'danger']
     : ['overview', 'review', 'profile', 'audit']
 }
@@ -481,8 +481,12 @@ export default function SchoolDetailsRoute() {
     && Boolean(school?.activationState.needsInitialPasswordSetup)
     && school?.lifecycleState.stage !== 'suspended'
     && school?.lifecycleState.stage !== 'blacklisted'
-  const canDeleteRejectedSchool = Boolean(isOwner && school?.lifecycleState.stage === 'rejected')
-  const allowedSections = getAllowedSections(canDeleteRejectedSchool)
+  const showDeletionSection = Boolean(
+    isOwner
+    && (school?.lifecycleState.stage === 'rejected' || school?.lifecycleState.stage === 'suspended')
+  )
+  const canDeleteSchool = Boolean(isOwner && school?.deletionEligibility.canDelete)
+  const allowedSections = getAllowedSections(showDeletionSection)
   const requestedSection = searchParams.get('section') as SchoolDetailsSection | null
   const activeSection =
     requestedSection && allowedSections.includes(requestedSection)
@@ -500,7 +504,7 @@ export default function SchoolDetailsRoute() {
     { id: 'profile', label: 'Profile', to: profileUrl },
     { id: 'audit', label: 'Audit', to: auditUrl },
   ]
-  if (canDeleteRejectedSchool) {
+  if (showDeletionSection) {
     sectionItems.push({ id: 'danger', label: 'Danger', to: dangerUrl })
   }
   const feedbackIsApprovalEmail =
@@ -999,14 +1003,14 @@ export default function SchoolDetailsRoute() {
         {activeSection === 'danger' ? (
         <section className="mx-auto max-w-3xl">
           <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
-            <h2 className="text-xl font-bold text-slate-950">Rejected-school deletion</h2>
+            <h2 className="text-xl font-bold text-slate-950">Permanent school deletion</h2>
 
-            {canDeleteRejectedSchool ? (
+            {canDeleteSchool ? (
               <div className="mt-6 space-y-5">
                 <FeedbackAlert
                   tone="warning"
                   title="Permanent deletion"
-                  message="This action is irreversible. Use it only when you are certain this rejected school should be removed completely from the platform."
+                  message={`This action is irreversible. ${school.deletionEligibility.message}`}
                 />
 
                 <Form method="post" action={dangerUrl} className="space-y-4">
@@ -1031,7 +1035,7 @@ export default function SchoolDetailsRoute() {
                     disabled={navigation.state === 'submitting'}
                     className="inline-flex items-center justify-center rounded-2xl bg-rose-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
                   >
-                    {pendingIntent === 'delete-school' ? 'Deleting rejected school...' : 'Delete rejected school'}
+                    {pendingIntent === 'delete-school' ? 'Deleting school...' : 'Delete school permanently'}
                   </button>
                 </Form>
               </div>
@@ -1039,11 +1043,7 @@ export default function SchoolDetailsRoute() {
               <FeedbackAlert
                 tone="info"
                 title="Deletion unavailable"
-                message={
-                  isOwner
-                    ? 'This school can only be deleted after it reaches the rejected state.'
-                    : 'Only a platform owner can delete rejected schools from the platform.'
-                }
+                message={school.deletionEligibility.message}
                 className="mt-6"
               />
             )}
