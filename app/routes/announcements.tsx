@@ -5,12 +5,10 @@ import { FeedbackAlert } from '~/components/feedback-alert'
 import { PlatformShell } from '~/components/platform-shell'
 import type {
   AnnouncementPriorityName,
-  AnnouncementStatusName,
   AnnouncementTargetTypeName,
   PlatformAnnouncementComposerOptions,
   PlatformAnnouncementDetail,
   PlatformAnnouncementListItem,
-  PlatformAnnouncementPagedResult,
 } from '~/models/platform-announcement'
 import {
   normalizeAnnouncementEnumName,

@@ -431,7 +431,10 @@ export default function SchoolDetailsRoute() {
   const [searchParams] = useSearchParams()
   const isOwner = loaderData.isOwner
   const school = actionData?.school ?? loaderData.school
-  const lifecycleOptions = school?.lifecycleState.availableActionOptions ?? []
+  const lifecycleOptions = useMemo(
+    () => school?.lifecycleState.availableActionOptions ?? [],
+    [school?.lifecycleState.availableActionOptions]
+  )
   const actionSignature = lifecycleOptions.map((option) => option.action).join('|')
   const pendingIntent =
     navigation.state === 'submitting' ? String(navigation.formData?.get('intent') ?? '') : ''
