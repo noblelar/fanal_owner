@@ -47,11 +47,24 @@ const DEFAULT_HEADERS = {
   Accept: 'application/json',
 }
 
+function authenticationHeaders(request?: Request) {
+  const headers = new Headers(DEFAULT_HEADERS)
+  const realIp = request?.headers.get('x-real-ip')?.trim()
+  const forwardedIp = request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+  const clientIp = realIp || forwardedIp
+
+  if (clientIp && /^[0-9a-f:.]+$/i.test(clientIp)) {
+    headers.set('X-Forwarded-For', clientIp)
+  }
+
+  return headers
+}
+
 export function getPlatformApiBaseUrl() {
   return process.env.FANAL_OWNER_API_BASE_URL ?? null
 }
 
-export async function loginPlatformUser(email: string, password: string) {
+export async function loginPlatformUser(email: string, password: string, request?: Request) {
   const baseUrl = getPlatformApiBaseUrl()
   if (!baseUrl) {
     return {
@@ -61,11 +74,22 @@ export async function loginPlatformUser(email: string, password: string) {
     }
   }
 
-  const response = await fetch(`${baseUrl}/api/platform/auth/login`, {
-    method: 'POST',
-    headers: DEFAULT_HEADERS,
-    body: JSON.stringify({ email, password }),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}/api/platform/auth/login`, {
+      method: 'POST',
+      headers: authenticationHeaders(request),
+      body: JSON.stringify({ email, password }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(30_000),
+    })
+  } catch {
+    return {
+      ok: false as const,
+      status: 503,
+      error: 'The platform sign-in service is unavailable. Please try again shortly.',
+    }
+  }
 
   const body = (await response.json().catch(() => null)) as
     | PlatformAuthPayload
@@ -73,11 +97,23 @@ export async function loginPlatformUser(email: string, password: string) {
     | null
 
   if (!response.ok || !body || !('accessToken' in body) || !('refreshToken' in body) || !('user' in body)) {
+    const retryAfter = response.headers.get('retry-after') ?? undefined
+    const retryAfterSeconds = Number(retryAfter)
+    const retryMessage =
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? `Too many sign-in attempts. Please try again in about ${Math.max(
+            1,
+            Math.ceil(retryAfterSeconds / 60)
+          )} minute(s).`
+        : 'Too many sign-in attempts. Please wait a few minutes and try again.'
     return {
       ok: false as const,
       status: response.status,
+      retryAfter,
       error:
-        (body && 'message' in body && typeof body.message === 'string' && body.message) ||
+        (response.status === 429
+          ? retryMessage
+          : body && 'message' in body && typeof body.message === 'string' && body.message) ||
         'Unable to sign in to the platform right now.',
     }
   }
@@ -88,7 +124,7 @@ export async function loginPlatformUser(email: string, password: string) {
   }
 }
 
-export async function completePlatformInvite(token: string, newPassword: string) {
+export async function completePlatformInvite(token: string, newPassword: string, request?: Request) {
   const baseUrl = getPlatformApiBaseUrl()
   if (!baseUrl) {
     return {
@@ -100,8 +136,10 @@ export async function completePlatformInvite(token: string, newPassword: string)
 
   const response = await fetch(`${baseUrl}/api/platform/auth/accept-invite`, {
     method: 'POST',
-    headers: DEFAULT_HEADERS,
+    headers: authenticationHeaders(request),
     body: JSON.stringify({ token, newPassword }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(30_000),
   })
 
   const body = (await response.json().catch(() => null)) as

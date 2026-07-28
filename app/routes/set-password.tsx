@@ -32,7 +32,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const password = String(formData.get('password') ?? '')
   const confirmPassword = String(formData.get('confirmPassword') ?? '')
 
-  if (!token) {
+  if (!token || token.length > 4096) {
     return json<ActionData>(
       {
         error: 'This invite link is missing its token. Ask a platform owner or admin to resend your invite.',
@@ -52,7 +52,7 @@ export async function action({ request }: ActionFunctionArgs) {
     )
   }
 
-  if (password.length < 8) {
+  if (password.length < 8 || password.length > 128) {
     return json<ActionData>(
       {
         passwordError:
@@ -84,7 +84,7 @@ export async function action({ request }: ActionFunctionArgs) {
     )
   }
 
-  const result = await completePlatformInvite(token, password)
+  const result = await completePlatformInvite(token, password, request)
   if (!result.ok) {
     return json<ActionData>(
       {

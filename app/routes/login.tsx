@@ -27,18 +27,24 @@ export async function action({ request }: ActionFunctionArgs) {
   const email = String(formData.get('email') ?? '').trim()
   const password = String(formData.get('password') ?? '')
 
-  if (!email || !password) {
+  if (!email || !password || email.length > 254 || password.length > 128) {
     return json<ActionData>(
       { formError: 'Enter both your platform email and password.', email },
       { status: 400 }
     )
   }
 
-  const result = await loginPlatformUser(email, password)
+  const result = await loginPlatformUser(email, password, request)
   if (!result.ok) {
     return json<ActionData>(
       { formError: result.error, email },
-      { status: result.status >= 400 ? result.status : 400 }
+      {
+        status: result.status >= 400 ? result.status : 400,
+        headers: {
+          'Cache-Control': 'no-store',
+          ...(result.retryAfter ? { 'Retry-After': result.retryAfter } : {}),
+        },
+      }
     )
   }
 
