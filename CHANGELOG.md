@@ -6,6 +6,8 @@ The project follows Semantic Versioning 2.0.0. Released entries are immutable; c
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-17
+
 ### Added
 
 - Established `1.0.0` as the first formally versioned production baseline.
@@ -13,3 +15,5 @@ The project follows Semantic Versioning 2.0.0. Released entries are immutable; c
 - Added the public `GET /api/version` diagnostics endpoint.
 - Added OCI image version and revision metadata support.
 - Added immutable `VERSION-sha.REVISION` image tags and digest summaries while retaining the existing SHA and `latest` tags.
+- Added a manually dispatched, environment-gated workflow for approved stable releases.
+- Added retry-safe promotion of the tested full-SHA image to an immutable bare version tag, annotated Git tag, and GitHub Release.

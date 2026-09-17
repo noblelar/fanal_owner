@@ -10,18 +10,25 @@ The root `package.json` is the authoritative source for the Owner application Se
 - MINOR: backward-compatible owner-console pages, workflows, and governance features.
 - MAJOR: incompatible route, session, configuration, API requirement, or documented workflow changes.
 
-## Build tags during the migration
+## Build and release tags
 
-Each `master` build currently publishes the existing full-commit and `latest` tags plus an immutable `VERSION-sha.REVISION` tag, for example `1.0.0-sha.abc123def456`. The bare `1.0.0` image tag is reserved for the later approved-release workflow so normal branch builds cannot overwrite a stable release.
+Each successful `master` build publishes the full-commit and `latest` tags plus an immutable `VERSION-sha.REVISION` tag, for example `1.0.0-sha.abc123def456`.
+
+The manually dispatched `.github/workflows/release.yml` workflow promotes the already-tested full-commit image to the bare stable version tag, for example `1.0.0`. It does not rebuild the image, change `latest`, or deploy to EC2. A stable version tag may never be moved to different image content.
 
 ## Release preparation
 
-1. Select the next version from the documented application-contract change.
-2. Update `package.json` and synchronize `package-lock.json` without creating a Git tag.
-3. Move relevant `CHANGELOG.md` entries from `Unreleased` into a dated version section.
-4. Run linting, type checking, tests, and the production build.
-5. Build the container with `APP_VERSION` equal to the package version and `GIT_SHA` equal to the full source commit.
-6. Verify `GET /api/version` reports the expected values.
-7. Create the immutable annotated Git tag `vX.Y.Z` only after the release candidate is approved.
+1. Select the next version from the documented owner-console contract change.
+2. Update `package.json` and synchronize both version fields in `package-lock.json` on a release-preparation branch.
+3. Move relevant `CHANGELOG.md` entries from `Unreleased` into a non-empty `## [X.Y.Z] - YYYY-MM-DD` section.
+4. Merge the reviewed preparation change into `master`.
+5. Wait for the normal `master` quality gate and build to pass and publish the full-commit Docker tag.
+6. Verify `GET /api/version` reports the expected version and source revision in the intended environment.
+7. In GitHub Actions, run **Release Fanal Owner** from `master`, enter the exact `X.Y.Z` version, and select `confirm_release`.
+8. Approve the dedicated `release_env` gate when prompted.
 
-The current production deployment process remains authoritative until the later pipeline migration phases are completed.
+The release workflow validates all package versions, the dated changelog entry, Git tag, GitHub Release, source image, and destination image before publishing anything. It promotes the exact full-SHA image, creates annotated `vX.Y.Z`, and publishes the matching GitHub Release. If a partial run is retried, any existing tag or image must still resolve to the same commit and digest.
+
+Create a dedicated `release_env` with a required reviewer and add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` to it. Keeping this separate from `production_env` prevents release governance from changing the existing deployment pipeline. Protect `v*` tags from updates and deletion, and enable immutable GitHub Releases where repository policy supports it.
+
+The current production deployment process remains authoritative. Publishing a release does not deploy it.
