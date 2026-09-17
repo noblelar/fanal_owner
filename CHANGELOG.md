@@ -1,0 +1,15 @@
+# Changelog
+
+All notable changes to Fanal Owner will be documented in this file.
+
+The project follows Semantic Versioning 2.0.0. Released entries are immutable; corrections are published as a new version.
+
+## [Unreleased]
+
+### Added
+
+- Established `1.0.0` as the first formally versioned production baseline.
+- Added build information that reports the Owner component version and source revision.
+- Added the public `GET /api/version` diagnostics endpoint.
+- Added OCI image version and revision metadata support.
+- Added immutable `VERSION-sha.REVISION` image tags and digest summaries while retaining the existing SHA and `latest` tags.
