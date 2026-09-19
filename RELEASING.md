@@ -18,9 +18,11 @@ The manually dispatched `.github/workflows/release.yml` workflow promotes the al
 
 ## Deployment image selection
 
-Production Compose resolves the Owner image from `FANAL_OWNER_IMAGE`. If the variable is unset or empty, it remains backward compatible by using `fanalarkgroup/fanal_owner:latest`. The value is a complete image reference, so a later deployment phase can supply either an immutable version tag or a digest without editing the Compose file.
+Production Compose resolves the Owner image from `FANAL_OWNER_IMAGE`. If the variable is unset or empty, it remains backward compatible by using `fanalarkgroup/fanal_owner:latest` for manual legacy operation.
 
-Phase 4 intentionally leaves the variable unset in production. Introducing the variable therefore does not change the image currently deployed by the existing pipeline.
+The normal `master` deployment does not consume that fallback. After pushing the full-commit tag, the build job resolves its manifest from Docker Hub and exports the registry-confirmed `docker.io/fanalarkgroup/fanal_owner@sha256:...` reference. The deployment job passes that reference to `/home/ubuntu/fanal/scripts/deploy-component.sh` together with the expected version and full Git revision. The server script rejects mutable references, verifies the running image ID, OCI labels, and version endpoint, reloads the proxy, and restores the previously running local image if verification fails. `latest` continues to be published only as a temporary compatibility tag.
+
+The server must have the Phase 4 image-variable Compose configuration and the current `deploy-component.sh` installed before this workflow reaches `master`. Successful deployments record their exact image and rollback reference in `/home/ubuntu/fanal/deployments/owner.env`.
 
 ## Release preparation
 
@@ -37,4 +39,4 @@ The release workflow validates all package versions, the dated changelog entry, 
 
 Create a dedicated `release_env` with a required reviewer and add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` to it. Keeping this separate from `production_env` prevents release governance from changing the existing deployment pipeline. Protect `v*` tags from updates and deletion, and enable immutable GitHub Releases where repository policy supports it.
 
-The current production deployment process remains authoritative. Publishing a release does not deploy it.
+The `master` build deploys its own immutable build digest. Publishing a stable release still does not deploy it.
