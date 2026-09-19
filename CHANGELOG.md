@@ -6,10 +6,15 @@ The project follows Semantic Versioning 2.0.0. Released entries are immutable; c
 
 ## [Unreleased]
 
+### Added
+
+- Added the coordinated Fanal platform release manifest contract and validation tooling for immutable API, Main, and Owner image combinations.
+
 ### Changed
 
 - Parameterized the production Owner image through `FANAL_OWNER_IMAGE` while preserving `fanalarkgroup/fanal_owner:latest` as the default.
 - Changed the `master` deployment to select the exact image digest produced by its build and verify the running image, version, revision, and automatic rollback state on EC2.
+- Made component-only automatic deployment an opt-in emergency path and added the manually approved platform coordinator for normal deployments.
 
 ## [1.0.0] - 2026-09-17
 
