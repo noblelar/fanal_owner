@@ -1,5 +1,7 @@
 # Releasing Fanal Owner
 
+Coordinated API/Main/Owner candidate deployment and platform promotion are documented in `PLATFORM_RELEASING.md`. This document continues to define the independent Owner component version and stable component release.
+
 ## Version source
 
 The root `package.json` is the authoritative source for the Owner application Semantic Version. The root entry in `package-lock.json`, Git tags, Docker labels, and release notes must match it.
@@ -20,7 +22,9 @@ The manually dispatched `.github/workflows/release.yml` workflow promotes the al
 
 Production Compose resolves the Owner image from `FANAL_OWNER_IMAGE`. If the variable is unset or empty, it remains backward compatible by using `fanalarkgroup/fanal_owner:latest` for manual legacy operation.
 
-The normal `master` deployment does not consume that fallback. After pushing the full-commit tag, the build job resolves its manifest from Docker Hub and exports the registry-confirmed `docker.io/fanalarkgroup/fanal_owner@sha256:...` reference. The deployment job passes that reference to `/home/ubuntu/fanal/scripts/deploy-component.sh` together with the expected version and full Git revision. The server script rejects mutable references, verifies the running image ID, OCI labels, and version endpoint, reloads the proxy, and restores the previously running local image if verification fails. `latest` continues to be published only as a temporary compatibility tag.
+The `master` build does not consume that fallback. It resolves and reports the registry-confirmed `docker.io/fanalarkgroup/fanal_owner@sha256:...` reference. Phase 6 leaves the former component-only deployment job disabled by default. The manually dispatched `Coordinate Fanal Platform Release` workflow validates and deploys the exact Owner, API, and Main digest combination as one candidate. The server verifies all three running images and endpoints and restores the previous coordinated combination if verification fails. `latest` continues to be published only as a temporary compatibility tag.
+
+Do not create the repository variable `FANAL_LEGACY_COMPONENT_AUTO_DEPLOY` during normal operation. Setting it to `true` re-enables the old component-only deployment as a break-glass path and temporarily bypasses platform-manifest coordination.
 
 The server must have the Phase 4 image-variable Compose configuration and the current `deploy-component.sh` installed before this workflow reaches `master`. Successful deployments record their exact image and rollback reference in `/home/ubuntu/fanal/deployments/owner.env`.
 

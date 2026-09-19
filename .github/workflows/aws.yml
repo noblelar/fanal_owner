@@ -34,6 +34,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify coordinated platform release contract
+        run: npm run test:platform-release
+
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
@@ -137,6 +140,9 @@ jobs:
 
   deploy:
     needs: build-push
+    # Phase 6 deploys Owner together with the exact API and Main candidates.
+    # This opt-in remains only as a documented break-glass legacy path.
+    if: ${{ vars.FANAL_LEGACY_COMPONENT_AUTO_DEPLOY == 'true' }}
     runs-on: ubuntu-latest
     environment: production_env
 

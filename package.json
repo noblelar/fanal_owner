@@ -9,6 +9,8 @@
     "dev": "node ./scripts/dev-with-env.mjs",
     "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
     "start": "node ./scripts/start-with-env.mjs",
+    "check:platform-release": "node ./scripts/validate-platform-release.mjs",
+    "test:platform-release": "node --test tests/platform-release-contract.test.mjs",
     "test:documentation": "node --test tests/documentation-workflow-state.test.mjs tests/documentation-editor-state.test.mjs tests/documentation-route-state.test.mjs",
     "test:documentation:e2e": "playwright test --config=playwright.config.mjs",
     "typecheck": "tsc"
