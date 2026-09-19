@@ -16,6 +16,12 @@ Each successful `master` build publishes the full-commit and `latest` tags plus 
 
 The manually dispatched `.github/workflows/release.yml` workflow promotes the already-tested full-commit image to the bare stable version tag, for example `1.0.0`. It does not rebuild the image, change `latest`, or deploy to EC2. A stable version tag may never be moved to different image content.
 
+## Deployment image selection
+
+Production Compose resolves the Owner image from `FANAL_OWNER_IMAGE`. If the variable is unset or empty, it remains backward compatible by using `fanalarkgroup/fanal_owner:latest`. The value is a complete image reference, so a later deployment phase can supply either an immutable version tag or a digest without editing the Compose file.
+
+Phase 4 intentionally leaves the variable unset in production. Introducing the variable therefore does not change the image currently deployed by the existing pipeline.
+
 ## Release preparation
 
 1. Select the next version from the documented owner-console contract change.
