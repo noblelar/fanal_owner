@@ -1,5 +1,6 @@
 import type { PlatformApiResult, PlatformAuthPayload } from '~/utils/platform-auth.server'
 import { callPlatformApi } from '~/utils/platform-auth.server'
+import type { PlatformSchoolAnalytics } from '~/models/platform-school-analytics'
 import type { PlatformSchoolDetails, PlatformSchoolSummary } from '~/models/platform-school'
 
 type PlatformSchoolListResponse = {
@@ -53,6 +54,18 @@ export function listPlatformSchools(
 
 export function getPlatformSchool(authState: PlatformAuthPayload, schoolId: string) {
   return callPlatformApi<PlatformSchoolDetailsResponse>(authState, `/api/platform/schools/${schoolId}`)
+}
+
+// Owner analytics use their own API client function so they cannot drift onto a school-admin endpoint.
+export function getPlatformSchoolAnalytics(
+  authState: PlatformAuthPayload,
+  schoolId: string
+) {
+  return callPlatformApi<PlatformSchoolAnalytics>(
+    authState,
+    `/api/platform/schools/${schoolId}/analytics`,
+    { cache: 'no-store' }
+  )
 }
 
 export function updatePlatformSchoolLifecycle(
