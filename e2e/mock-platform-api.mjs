@@ -16,10 +16,61 @@ const platformUser = {
   lastLoginAt: now(),
 }
 
+const analyticsSchool = {
+  id: 'school-e2e',
+  schoolName: 'Northbridge Academy',
+  schoolIndex: 12001,
+  crest: '',
+  country: 'Ghana',
+  region: 'Greater Accra',
+  mmd: 'Accra Metropolitan',
+  landmark: 'Near the central library',
+  phoneNumber: '+233 20 000 0000',
+  email: 'hello@northbridge.test',
+  emailConfirmed: true,
+  phoneNumberConfirmed: true,
+  applicationDate: '2026-01-05T09:00:00Z',
+  approved: true,
+  approvalDate: '2026-01-08T14:00:00Z',
+  approvalStatus: 'approved',
+  workingStatus: 'active',
+  activationState: {
+    stage: 'active',
+    stageLabel: 'Active',
+    nextAction: 'No activation action required.',
+    statusHeadline: 'School account is active',
+    statusMessage: 'The school can access its account.',
+    canLogin: true,
+    emailConfirmed: true,
+    approved: true,
+    needsInitialPasswordSetup: false,
+    approvalStatus: 'approved',
+  },
+  lifecycleState: {
+    stage: 'active',
+    stageLabel: 'Active',
+    statusHeadline: 'School is operating normally',
+    statusMessage: 'No lifecycle intervention is required.',
+    approvalStatus: 'approved',
+    workingStatus: 'active',
+    availableActions: [],
+    availableActionOptions: [],
+  },
+  deletionEligibility: {
+    canDelete: false,
+    attachedUserCount: 18,
+    reasonCode: 'active_school',
+    message: 'Active schools cannot be deleted.',
+  },
+  auditTrail: [],
+}
+
 let state
 
 function resetState() {
   state = {
+    analyticsRequests: 0,
+    failAnalytics: false,
     failDetailsSaveOnce: true,
     nextFlow: 2,
     nextStep: 3,
@@ -185,6 +236,13 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  if (path === '/__test/analytics-failure' && request.method === 'POST') {
+    const body = await readJson(request)
+    state.failAnalytics = body.enabled === true
+    sendJson(response, 200, { enabled: state.failAnalytics })
+    return
+  }
+
   if (path === '/api/platform/auth/login' && request.method === 'POST') {
     sendJson(response, 200, authPayload())
     return
@@ -202,6 +260,67 @@ const server = createServer(async (request, response) => {
 
   if (path === '/api/platform/auth/logout' && request.method === 'POST') {
     sendJson(response, 200, { message: 'Signed out.' })
+    return
+  }
+
+  if (path === '/api/platform/schools/school-e2e/analytics' && request.method === 'GET') {
+    state.analyticsRequests += 1
+
+    if (state.failAnalytics) {
+      sendJson(response, 503, { message: 'School analytics are temporarily unavailable.' })
+      return
+    }
+
+    sendJson(response, 200, {
+      schoolId: analyticsSchool.id,
+      totalStaff: 6 + state.analyticsRequests,
+      staffByRole: [
+        { role: 'ADMIN', label: 'Admin', count: 1 },
+        { role: 'TEACHER', label: 'Teacher', count: 4 },
+        { role: 'STAFF', label: 'General staff', count: 2 },
+      ],
+      totalEnrolledStudents: 214,
+      totalParents: 176,
+      pendingApplications: 9,
+      latestLogin: {
+        userId: 'teacher-e2e',
+        displayName: 'Akosua Mensah',
+        role: 'TEACHER',
+        roleLabel: 'Teacher',
+        occurredAtUtc: '2026-09-20T08:45:00Z',
+      },
+      generatedAtUtc: now(),
+    })
+    return
+  }
+
+  if (path === '/api/platform/schools/school-e2e' && request.method === 'GET') {
+    sendJson(response, 200, { school: analyticsSchool })
+    return
+  }
+
+  if (path === '/api/platform/schools/school-empty/analytics' && request.method === 'GET') {
+    sendJson(response, 200, {
+      schoolId: 'school-empty',
+      totalStaff: 0,
+      staffByRole: [],
+      totalEnrolledStudents: 0,
+      totalParents: 0,
+      pendingApplications: 0,
+      latestLogin: null,
+      generatedAtUtc: now(),
+    })
+    return
+  }
+
+  if (path === '/api/platform/schools/school-empty' && request.method === 'GET') {
+    sendJson(response, 200, {
+      school: {
+        ...analyticsSchool,
+        id: 'school-empty',
+        schoolName: 'New School Without Activity',
+      },
+    })
     return
   }
 

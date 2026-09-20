@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "platformVersion": "1.0.0",
+  "components": {
+    "api": {
+      "image": "docker.io/fanalarkgroup/fanalapi@sha256:b7a4490b7496324a53c03474580c93b99ad8394ca9dfd96f9961486f49bbb1c7",
+      "version": "1.0.0",
+      "revision": "4e379b8d70b4813c63ea4859961ca935fa596e5a"
+    },
+    "main": {
+      "image": "docker.io/fanalarkgroup/fanal@sha256:04028c7e06126b98e9f91f3330b9a7365dc762eeb74d6bc1b4c10f2f11b37f5e",
+      "version": "1.0.0",
+      "revision": "d2dbeb1779de7d48487f74e077ced7f42e7cadc2"
+    },
+    "owner": {
+      "image": "docker.io/fanalarkgroup/fanal_owner@sha256:cc2a6dfd4549331d8def7f6a0bd518a38a31ccb72bd6e1df74f0dfadde5e4ab2",
+      "version": "1.0.0",
+      "revision": "1573ecc68e9ca1b64d8c0ebf4b524d8cb16d165c"
+    }
+  },
+  "compatibility": {
+    "apiContractMajor": 1,
+    "databaseMigrationPolicy": "backward-compatible-only"
+  },
+  "rolloutPolicy": {
+    "initialStage": "test",
+    "schoolSelector": "authenticated-school-id",
+    "activation": "manual"
+  }
+}

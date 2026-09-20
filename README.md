@@ -1,5 +1,9 @@
 # Welcome to Remix!
 
+## Production releases
+
+Use [RELEASE_GUIDE.md](./RELEASE_GUIDE.md) as the canonical step-by-step procedure for Fanal API, Main, Owner, and coordinated platform releases. It covers patch, minor, and major version selection, immutable candidate deployment, verification, promotion, component publication, feature rollout, and rollback.
+
 - 📖 [Remix docs](https://remix.run/docs)
 
 ## Development

@@ -2,6 +2,8 @@
 
 Coordinated API/Main/Owner candidate deployment and platform promotion are documented in `PLATFORM_RELEASING.md`. This document continues to define the independent Owner component version and stable component release.
 
+The owner school analytics feature has an additional migration, verification, and rollback checklist in `SCHOOL_ANALYTICS_RELEASE.md`.
+
 ## Version source
 
 The root `package.json` is the authoritative source for the Owner application Semantic Version. The root entry in `package-lock.json`, Git tags, Docker labels, and release notes must match it.

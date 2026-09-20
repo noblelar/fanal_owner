@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json, redirect } from '@remix-run/node'
-import { Form, Link, useActionData, useLoaderData, useNavigation, useSearchParams } from '@remix-run/react'
+import { Form, Link, useActionData, useLoaderData, useNavigation, useRevalidator, useSearchParams } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
+import { PlatformSchoolAnalyticsPanel } from '~/components/platform-school-analytics'
 import { PlatformShell } from '~/components/platform-shell'
+import type { PlatformSchoolAnalytics } from '~/models/platform-school-analytics'
 import type {
   PlatformSchoolDetails,
   PlatformSchoolLifecycleActionOption,
@@ -12,6 +14,7 @@ import { didPlatformAuthChange } from '~/utils/platform-auth.server'
 import {
   deletePlatformSchool,
   getPlatformSchool,
+  getPlatformSchoolAnalytics,
   resendPlatformSchoolApprovalEmail,
   updatePlatformSchoolProfile,
   updatePlatformSchoolLifecycle,
@@ -24,6 +27,8 @@ import {
 import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
+  analytics?: PlatformSchoolAnalytics
+  analyticsError?: string
   currentUserRoles: string[]
   error?: string
   isOwner: boolean
@@ -92,9 +97,9 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     )
   }
 
-  const result = await getPlatformSchool(authState, schoolId)
+  const schoolResult = await getPlatformSchool(authState, schoolId)
 
-  if (!result.ok && result.status === 401 && !result.authState) {
+  if (!schoolResult.ok && schoolResult.status === 401 && !schoolResult.authState) {
     return redirect('/login', {
       headers: {
         'Set-Cookie': await clearPlatformAuthState(request),
@@ -102,17 +107,36 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     })
   }
 
-  const headers = await buildAuthHeaders(request, authState, result.authState)
-
-  if (!result.ok) {
+  if (!schoolResult.ok) {
+    const headers = await buildAuthHeaders(request, authState, schoolResult.authState)
     return json<LoaderData>(
-      { currentUserRoles: authState.user.roles, error: result.error, isOwner: ownerSessionIsOwner },
-      { status: result.status >= 400 ? result.status : 500, headers }
+      { currentUserRoles: authState.user.roles, error: schoolResult.error, isOwner: ownerSessionIsOwner },
+      { status: schoolResult.status >= 400 ? schoolResult.status : 500, headers }
     )
   }
 
+  // Use the newest auth state so an access-token refresh during the school request is not repeated.
+  const analyticsResult = await getPlatformSchoolAnalytics(schoolResult.authState, schoolId)
+
+  if (!analyticsResult.ok && analyticsResult.status === 401 && !analyticsResult.authState) {
+    return redirect('/login', {
+      headers: {
+        'Set-Cookie': await clearPlatformAuthState(request),
+      },
+    })
+  }
+
+  const finalAuthState = analyticsResult.authState ?? schoolResult.authState
+  const headers = await buildAuthHeaders(request, authState, finalAuthState)
+
   return json<LoaderData>(
-    { currentUserRoles: result.authState.user.roles, isOwner: result.authState.user.roles.includes('PLATFORM_OWNER'), school: result.data.school },
+    {
+      analytics: analyticsResult.ok ? analyticsResult.data : undefined,
+      analyticsError: analyticsResult.ok ? undefined : analyticsResult.error,
+      currentUserRoles: finalAuthState.user.roles,
+      isOwner: finalAuthState.user.roles.includes('PLATFORM_OWNER'),
+      school: schoolResult.data.school,
+    },
     { headers }
   )
 }
@@ -428,6 +452,7 @@ export default function SchoolDetailsRoute() {
   const loaderData = useLoaderData<typeof loader>()
   const actionData = useActionData<typeof action>()
   const navigation = useNavigation()
+  const revalidator = useRevalidator()
   const [searchParams] = useSearchParams()
   const isOwner = loaderData.isOwner
   const school = actionData?.school ?? loaderData.school
@@ -634,7 +659,15 @@ export default function SchoolDetailsRoute() {
         </div>
 
         {activeSection === 'overview' ? (
-        <section className="mx-auto max-w-5xl">
+        <section className="mx-auto max-w-5xl space-y-6">
+          <PlatformSchoolAnalyticsPanel
+            key={school.id}
+            analytics={loaderData.analytics?.schoolId === school.id ? loaderData.analytics : undefined}
+            error={loaderData.analyticsError}
+            isRefreshing={revalidator.state === 'loading'}
+            onRefresh={() => revalidator.revalidate()}
+          />
+
           <article className="rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
             <h2 className="text-xl font-bold text-slate-950">School preview</h2>
 
