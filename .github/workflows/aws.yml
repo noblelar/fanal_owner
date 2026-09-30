@@ -34,6 +34,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify component release metadata contract
+        run: npm run test:component-release-metadata
+
+      - name: Verify read-only release catalog artifact validation
+        run: npm run test:release-catalog
+
       - name: Verify coordinated platform release contract
         run: npm run test:platform-release
 
@@ -124,6 +130,28 @@ jobs:
           echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
           echo "registry_digest=$REGISTRY_DIGEST" >> "$GITHUB_OUTPUT"
           echo "Immutable deployment image: $IMAGE_REF"
+
+      - name: Create and validate Owner release metadata
+        shell: bash
+        env:
+          COMPONENT_RELEASE_COMPONENT: owner
+          COMPONENT_RELEASE_REPOSITORY: ${{ github.repository }}
+          COMPONENT_RELEASE_BRANCH: ${{ github.ref_name }}
+          COMPONENT_RELEASE_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          COMPONENT_RELEASE_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          COMPONENT_RELEASE_WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPONENT_RELEASE_VERSION: ${{ steps.app-version.outputs.version }}
+          COMPONENT_RELEASE_REVISION: ${{ github.sha }}
+          COMPONENT_RELEASE_IMAGE: ${{ steps.deployment-image.outputs.image_ref }}
+        run: node scripts/component-release-metadata.mjs
+
+      - name: Publish Owner release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: component-release-owner-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts/component-release.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Summarize published Owner image
         shell: bash
