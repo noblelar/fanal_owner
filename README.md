@@ -14,6 +14,27 @@ Run the dev server:
 npm run dev
 ```
 
+## Read-only Release Center
+
+The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 2 is intentionally read-only and does not dispatch deployment operations.
+
+Configure a GitHub App with **Metadata: read** and **Actions: read** access to `noblelar/fanalAPI`, `noblelar/fanal_main`, and `noblelar/fanal_owner`. Mount its PEM private key as a server-side secret file, then configure:
+
+```text
+GITHUB_CATALOG_APP_ID
+GITHUB_CATALOG_INSTALLATION_ID
+GITHUB_CATALOG_PRIVATE_KEY_FILE
+```
+
+Optional catalog controls are `GITHUB_CATALOG_CACHE_SECONDS` (15–300 seconds) and `GITHUB_CATALOG_MAX_CANDIDATES` (1–20 builds per component). The private key is never returned to the browser.
+
+Run the catalog contract tests with:
+
+```shellscript
+npm run test:component-release-metadata
+npm run test:release-catalog
+```
+
 ## Documentation regression tests
 
 Run the Owner documentation state and route-action tests:
