@@ -2,11 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { strToU8, zipSync } from 'fflate'
 
-import { parseComponentReleaseArtifact } from '../app/utils/component-release-artifact.server.js'
+import {
+  parseComponentReleaseArtifact,
+  parsePlatformReleaseArtifact,
+} from '../app/utils/component-release-artifact.server.js'
 import {
   buildComponentReleaseMetadata,
   COMPONENT_RELEASE_COMPONENTS,
 } from '../scripts/component-release-metadata.mjs'
+import { buildPlatformReleaseManifest } from '../scripts/platform-release-contract.mjs'
 
 function releaseFixture(overrides = {}) {
   const contract = COMPONENT_RELEASE_COMPONENTS.api
@@ -65,5 +69,31 @@ test('rejects archives without exactly one component release document', () => {
   assert.throws(
     () => parseComponentReleaseArtifact(archive, expected),
     /metadata-file-count-invalid/
+  )
+})
+
+test('extracts a validated promoted platform manifest bound to its workflow run', () => {
+  const manifest = buildPlatformReleaseManifest({
+    platformVersion: '1.4.0',
+    apiImage: `docker.io/fanalarkgroup/fanalapi@sha256:${'a'.repeat(64)}`,
+    apiVersion: '1.2.0',
+    apiRevision: '1'.repeat(40),
+    mainImage: `docker.io/fanalarkgroup/fanal@sha256:${'b'.repeat(64)}`,
+    mainVersion: '1.3.0',
+    mainRevision: '2'.repeat(40),
+    ownerImage: `docker.io/fanalarkgroup/fanal_owner@sha256:${'c'.repeat(64)}`,
+    ownerVersion: '1.1.0',
+    ownerRevision: '3'.repeat(40),
+  })
+  const archive = zipSync({
+    'platform-release.json': strToU8(JSON.stringify(manifest)),
+  })
+
+  assert.deepEqual(
+    parsePlatformReleaseArtifact(archive, {
+      artifactName: 'fanal-platform-1.4.0-promote-candidate-987654321',
+      workflowRunId: 987654321,
+    }),
+    manifest
   )
 })

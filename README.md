@@ -14,9 +14,9 @@ Run the dev server:
 npm run dev
 ```
 
-## Read-only Release Center
+## Release Center candidate composition
 
-The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 2 is intentionally read-only and does not dispatch deployment operations.
+The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 3 can combine those artifacts with unchanged stable components, enforce Semantic Version progression, recommend a platform increment, and generate a deterministic manifest preview. It does not dispatch deployment operations.
 
 Configure a GitHub App with **Metadata: read** and **Actions: read** access to `noblelar/fanalAPI`, `noblelar/fanal_main`, and `noblelar/fanal_owner`. Mount its PEM private key as a server-side secret file, then configure:
 

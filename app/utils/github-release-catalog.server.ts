@@ -4,8 +4,12 @@ import type {
   PlatformReleaseHistoryItem,
   ReadOnlyReleaseCatalog,
   ReleaseComponentName,
+  StablePlatformRelease,
 } from '~/models/platform-release-candidate'
-import { parseComponentReleaseArtifact } from '~/utils/component-release-artifact.server.js'
+import {
+  parseComponentReleaseArtifact,
+  parsePlatformReleaseArtifact,
+} from '~/utils/component-release-artifact.server.js'
 import {
   getGitHubCatalogInstallationToken,
   githubCatalogRequestHeaders,
@@ -270,28 +274,51 @@ function optionalInput(inputs: GitHubWorkflowRun['inputs'], name: string) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-async function loadPlatformReleaseHistory(token: string) {
+function artifactOperation(artifact: GitHubArtifact, runId: number) {
+  const match = /^fanal-platform-(.+)-(deploy-candidate|verify-candidate|promote-candidate)-(\d+)$/.exec(
+    artifact.name
+  )
+  return match && Number(match[3]) === runId
+    ? { operation: match[2], platformVersion: match[1] }
+    : null
+}
+
+async function loadPlatformReleaseState(token: string) {
   const query = new URLSearchParams({
     branch: 'master',
     event: 'workflow_dispatch',
     per_page: '20',
   })
-  const response = await githubJson<GitHubWorkflowRunsResponse>(
-    repositoryApiPath(
-      componentConfigurations.owner.repository,
-      `/actions/workflows/platform-release.yml/runs?${query.toString()}`
+  const repository = componentConfigurations.owner.repository
+  const [response, artifacts] = await Promise.all([
+    githubJson<GitHubWorkflowRunsResponse>(
+      repositoryApiPath(
+        repository,
+        `/actions/workflows/platform-release.yml/runs?${query.toString()}`
+      ),
+      token
     ),
-    token
-  )
+    listRepositoryArtifacts(repository, token),
+  ])
+  const artifactEvidence = new Map<number, { artifact: GitHubArtifact; operation: string; platformVersion: string }>()
+  for (const artifact of artifacts) {
+    const runId = artifact.workflow_run?.id
+    if (!runId || artifact.expired) continue
+    const evidence = artifactOperation(artifact, runId)
+    if (evidence) artifactEvidence.set(runId, { artifact, ...evidence })
+  }
 
-  return response.workflow_runs.map(
+  const history = response.workflow_runs.map(
     (run): PlatformReleaseHistoryItem => ({
       actor: run.actor?.login || 'Unknown operator',
       conclusion: run.conclusion,
       createdAt: run.created_at,
       displayTitle: run.display_title || `Platform workflow run #${run.run_number}`,
-      operation: optionalInput(run.inputs, 'operation'),
-      platformVersion: optionalInput(run.inputs, 'platform_version'),
+      operation: optionalInput(run.inputs, 'operation') || artifactEvidence.get(run.id)?.operation || null,
+      platformVersion:
+        optionalInput(run.inputs, 'platform_version') ||
+        artifactEvidence.get(run.id)?.platformVersion ||
+        null,
       runId: run.id,
       runNumber: run.run_number,
       runUrl: run.html_url,
@@ -299,6 +326,59 @@ async function loadPlatformReleaseHistory(token: string) {
       updatedAt: run.updated_at,
     })
   )
+
+  const successfulRuns = response.workflow_runs
+    .filter((run) => run.conclusion === 'success')
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
+  const latestSuccessfulRun = successfulRuns[0]
+  if (!latestSuccessfulRun) {
+    return { history, stable: null as StablePlatformRelease | null }
+  }
+
+  const latestEvidence = artifactEvidence.get(latestSuccessfulRun.id)
+  const latestOperation =
+    optionalInput(latestSuccessfulRun.inputs, 'operation') || latestEvidence?.operation || null
+  if (latestOperation !== 'promote-candidate') {
+    const readableOperation = latestOperation || 'an operation without complete manifest evidence'
+    return {
+      history,
+      stable: null as StablePlatformRelease | null,
+      stableError: `The latest successful platform operation is ${readableOperation}. Candidate composition is paused until the current stable manifest is confirmed by a successful promotion.`,
+    }
+  }
+
+  if (!latestEvidence || latestEvidence.operation !== 'promote-candidate') {
+    return {
+      history,
+      stable: null as StablePlatformRelease | null,
+      stableError:
+        'The latest successful promotion artifact is unavailable or expired, so the current stable platform cannot be verified.',
+    }
+  }
+
+  try {
+    const archive = await githubBytes(latestEvidence.artifact.archive_download_url, token)
+    const manifest = parsePlatformReleaseArtifact(archive, {
+      artifactName: latestEvidence.artifact.name,
+      workflowRunId: latestSuccessfulRun.id,
+    })
+    return {
+      history,
+      stable: {
+        manifest,
+        promotedAt: latestSuccessfulRun.updated_at,
+        workflowRunId: latestSuccessfulRun.id,
+        workflowRunUrl: latestSuccessfulRun.html_url,
+      } satisfies StablePlatformRelease,
+    }
+  } catch {
+    return {
+      history,
+      stable: null as StablePlatformRelease | null,
+      stableError:
+        'The latest successful promotion manifest failed validation, so candidate composition is blocked.',
+    }
+  }
 }
 
 async function loadCatalog() {
@@ -311,10 +391,16 @@ async function loadCatalog() {
 
   let history: PlatformReleaseHistoryItem[] = []
   let historyError: string | undefined
+  let stable: StablePlatformRelease | null = null
+  let stableError: string | undefined
   try {
-    history = await loadPlatformReleaseHistory(token)
+    const releaseState = await loadPlatformReleaseState(token)
+    history = releaseState.history
+    stable = releaseState.stable
+    stableError = releaseState.stableError
   } catch (error) {
     historyError = error instanceof Error ? error.message : 'Platform release history is unavailable.'
+    stableError = 'The current stable platform could not be verified from GitHub release evidence.'
   }
 
   return {
@@ -322,6 +408,8 @@ async function loadCatalog() {
     history,
     historyError,
     refreshedAt: new Date().toISOString(),
+    stable,
+    stableError,
   } satisfies ReadOnlyReleaseCatalog
 }
 
