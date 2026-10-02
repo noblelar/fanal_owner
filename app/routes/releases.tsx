@@ -2,20 +2,34 @@ import type { LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json } from '@remix-run/node'
 import { Link, useLoaderData } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
+import { PlatformReleaseComposer } from '~/components/platform-release-composer'
 import { PlatformShell } from '~/components/platform-shell'
 import {
   releaseComponentNames,
   type ComponentReleaseCandidate,
+  type PlatformReleaseCandidatePreview,
+  type PlatformReleaseComponent,
   type PlatformReleaseHistoryItem,
+  type PlatformVersionOption,
   type ReadOnlyReleaseCatalog,
+  type ReleaseComponentName,
 } from '~/models/platform-release-candidate'
 import { getReadOnlyReleaseCatalog } from '~/utils/github-release-catalog.server'
+import {
+  composePlatformReleaseCandidate,
+  getPlatformVersionOptions,
+} from '~/utils/platform-release-selection.js'
 import { requirePlatformAuthState } from '~/utils/session.server'
 import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
   catalog: ReadOnlyReleaseCatalog | null
   error?: string
+  platformVersionSelection: string
+  preview: PlatformReleaseCandidatePreview | null
+  previewRequested: boolean
+  selections: Record<ReleaseComponentName, string>
+  versionOptions: PlatformVersionOption[]
   viewerRoles: string[]
 }
 
@@ -23,17 +37,76 @@ const releaseViewerRoles = new Set(['PLATFORM_OWNER', 'PLATFORM_ADMIN'])
 
 export const meta: MetaFunction = () => buildFanalMeta('Release Center')
 
+function defaultSelection(
+  catalog: ReadOnlyReleaseCatalog,
+  component: ReleaseComponentName
+) {
+  if (catalog.stable) return 'stable'
+  const newestCandidate = catalog.components[component].candidates[0]
+  return newestCandidate ? `artifact:${newestCandidate.artifactId}` : ''
+}
+
+function resolveComponentSelection(
+  catalog: ReadOnlyReleaseCatalog,
+  component: ReleaseComponentName,
+  reference: string
+): PlatformReleaseComponent | null {
+  if (reference === 'stable') {
+    return catalog.stable?.manifest.components[component] ?? null
+  }
+  const match = /^artifact:(\d+)$/.exec(reference)
+  if (!match) return null
+  const artifactId = Number(match[1])
+  const candidate = catalog.components[component].candidates.find(
+    (entry) => entry.artifactId === artifactId
+  )
+  return candidate
+    ? { image: candidate.image, revision: candidate.revision, version: candidate.version }
+    : null
+}
+
 export async function loader({ request }: LoaderFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   if (!authState.user.roles.some((role) => releaseViewerRoles.has(role))) {
     throw new Response('You are not authorized to view platform releases.', { status: 403 })
   }
 
-  const forceRefresh = new URL(request.url).searchParams.get('refresh') === '1'
+  const url = new URL(request.url)
+  const forceRefresh = url.searchParams.get('refresh') === '1'
+  const previewRequested = url.searchParams.get('preview') === '1'
+  const platformVersionSelection = url.searchParams.get('platformVersion') || 'auto'
   try {
     const catalog = await getReadOnlyReleaseCatalog({ forceRefresh })
+    const selections = Object.fromEntries(
+      releaseComponentNames.map((component) => [
+        component,
+        url.searchParams.get(component) || defaultSelection(catalog, component),
+      ])
+    ) as Record<ReleaseComponentName, string>
+    const versionOptions = getPlatformVersionOptions(
+      catalog.stable?.manifest ?? null
+    ) as PlatformVersionOption[]
+    const resolvedComponents = Object.fromEntries(
+      releaseComponentNames.map((component) => [
+        component,
+        resolveComponentSelection(catalog, component, selections[component]),
+      ])
+    ) as Record<ReleaseComponentName, PlatformReleaseComponent | null>
+    const preview =
+      previewRequested && !catalog.stableError
+        ? (composePlatformReleaseCandidate({
+            components: resolvedComponents,
+            requestedPlatformVersion: platformVersionSelection,
+            stableManifest: catalog.stable?.manifest ?? null,
+          }) as PlatformReleaseCandidatePreview)
+        : null
     return json<LoaderData>({
       catalog,
+      platformVersionSelection,
+      preview,
+      previewRequested,
+      selections,
+      versionOptions,
       viewerRoles: authState.user.roles,
     })
   } catch (error) {
@@ -43,6 +116,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
         error instanceof Error
           ? error.message
           : 'The GitHub release catalog is currently unavailable.',
+      platformVersionSelection,
+      preview: null,
+      previewRequested,
+      selections: { api: '', main: '', owner: '' },
+      versionOptions: [],
       viewerRoles: authState.user.roles,
     })
   }
@@ -152,7 +230,16 @@ function CandidateCard({ candidate }: { candidate: ComponentReleaseCandidate }) 
 }
 
 export default function ReleasesRoute() {
-  const { catalog, error, viewerRoles } = useLoaderData<typeof loader>()
+  const {
+    catalog,
+    error,
+    platformVersionSelection,
+    preview,
+    previewRequested,
+    selections,
+    versionOptions,
+    viewerRoles,
+  } = useLoaderData<typeof loader>()
   const componentCatalogs = catalog
     ? releaseComponentNames.map((component) => catalog.components[component])
     : []
@@ -182,8 +269,8 @@ export default function ReleasesRoute() {
       <div className="space-y-8">
         <FeedbackAlert
           tone="info"
-          title="Read-only release catalog"
-          message="Phase 2 does not deploy, verify, promote, or roll back software. Candidate selection and release controls will be introduced in later phases."
+          title="Safe candidate composition"
+          message="Phase 3 can select builds and generate a validated manifest preview. It still cannot deploy, verify, promote, or roll back software."
         />
 
         {error ? (
@@ -202,6 +289,15 @@ export default function ReleasesRoute() {
               <SummaryCard label="Platform runs" value={String(catalog.history.length)} />
               <SummaryCard label="Last refreshed" value={formatDateTime(catalog.refreshedAt)} compact />
             </section>
+
+            <PlatformReleaseComposer
+              catalog={catalog}
+              platformVersionSelection={platformVersionSelection}
+              preview={preview}
+              previewRequested={previewRequested}
+              selections={selections}
+              versionOptions={versionOptions}
+            />
 
             <section className="space-y-5" aria-labelledby="component-builds-heading">
               <div>

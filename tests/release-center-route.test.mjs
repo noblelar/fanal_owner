@@ -11,6 +11,10 @@ const appAuthSource = await readFile(
   new URL('../app/utils/github-app.server.ts', import.meta.url),
   'utf8'
 )
+const composerSource = await readFile(
+  new URL('../app/components/platform-release-composer.tsx', import.meta.url),
+  'utf8'
+)
 
 test('the Release Center requires an authenticated Owner or Admin role', () => {
   assert.match(routeSource, /requirePlatformAuthState\(request\)/)
@@ -19,11 +23,13 @@ test('the Release Center requires an authenticated Owner or Admin role', () => {
   assert.match(routeSource, /status: 403/)
 })
 
-test('Phase 2 exposes no mutation action or deployment control', () => {
+test('Phase 3 composition remains a GET-only preview with no mutation action', () => {
   assert.doesNotMatch(routeSource, /export\s+(?:async\s+)?function\s+action/)
   assert.doesNotMatch(routeSource, /method=["']post["']/i)
   assert.doesNotMatch(routeSource, /deploy-candidate|promote-candidate|rollback-candidate/)
-  assert.match(routeSource, /Read-only release catalog/)
+  assert.match(composerSource, /<Form method="get"/)
+  assert.doesNotMatch(composerSource, /method=["']post["']/i)
+  assert.match(composerSource, /Preview only/)
 })
 
 test('catalog access stays server-side and uses short-lived installation credentials', () => {

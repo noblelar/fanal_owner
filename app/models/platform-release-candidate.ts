@@ -41,9 +41,70 @@ export type PlatformReleaseHistoryItem = {
   updatedAt: string
 }
 
+export type PlatformReleaseComponent = {
+  image: string
+  revision: string
+  version: string
+}
+
+export type PlatformReleaseManifest = {
+  schemaVersion: number
+  platformVersion: string
+  components: Record<ReleaseComponentName, PlatformReleaseComponent>
+  compatibility: {
+    apiContractMajor: number
+    databaseMigrationPolicy: string
+  }
+  rolloutPolicy: {
+    activation: string
+    initialStage: string
+    schoolSelector: string
+  }
+}
+
+export type StablePlatformRelease = {
+  manifest: PlatformReleaseManifest
+  promotedAt: string
+  workflowRunId: number
+  workflowRunUrl: string
+}
+
+export type ReleaseCandidateIssue = {
+  code: string
+  component?: ReleaseComponentName
+  message: string
+}
+
+export type ReleaseComponentChange = {
+  bump: 'major' | 'minor' | 'patch' | 'none'
+  changed: boolean
+  component: ReleaseComponentName
+  fromVersion: string | null
+  toVersion: string
+}
+
+export type PlatformVersionOption = {
+  bump: 'major' | 'minor' | 'patch' | 'initial'
+  label: string
+  version: string
+}
+
+export type PlatformReleaseCandidatePreview = {
+  changes: Record<ReleaseComponentName, ReleaseComponentChange>
+  issues: ReleaseCandidateIssue[]
+  manifest: PlatformReleaseManifest | null
+  recommendedBump: 'major' | 'minor' | 'patch' | 'initial'
+  recommendedPlatformVersion: string
+  selectedPlatformVersion: string
+  versionOptions: PlatformVersionOption[]
+  warnings: ReleaseCandidateIssue[]
+}
+
 export type ReadOnlyReleaseCatalog = {
   components: Record<ReleaseComponentName, ComponentReleaseCatalog>
   history: PlatformReleaseHistoryItem[]
   historyError?: string
   refreshedAt: string
+  stable: StablePlatformRelease | null
+  stableError?: string
 }
