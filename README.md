@@ -14,19 +14,22 @@ Run the dev server:
 npm run dev
 ```
 
-## Release Center candidate composition
+## Release Center candidate deployment
 
-The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 3 can combine those artifacts with unchanged stable components, enforce Semantic Version progression, recommend a platform increment, and generate a deterministic manifest preview. It does not dispatch deployment operations.
+The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 4 can combine those artifacts with unchanged stable components, enforce Semantic Version progression, generate a deterministic manifest, and queue `deploy-candidate` through the protected GitHub workflow.
 
-Configure a GitHub App with **Metadata: read** and **Actions: read** access to `noblelar/fanalAPI`, `noblelar/fanal_main`, and `noblelar/fanal_owner`. Mount its PEM private key as a server-side secret file, then configure:
+Dispatch is restricted to `PLATFORM_OWNER`, protected by a session-bound CSRF token and explicit confirmation, and revalidated from fresh artifact IDs on the server. `PLATFORM_ADMIN` remains view-only. The GitHub `platform_release_env` required-reviewer gate remains mandatory after the request is queued.
+
+Configure a GitHub App with **Metadata: read** and **Actions: read and write** access to `noblelar/fanalAPI`, `noblelar/fanal_main`, and `noblelar/fanal_owner`. Approve the permission change on the existing App installation, mount its PEM private key as a server-side secret file, then configure:
 
 ```text
 GITHUB_CATALOG_APP_ID
 GITHUB_CATALOG_INSTALLATION_ID
 GITHUB_CATALOG_PRIVATE_KEY_FILE
+GITHUB_CATALOG_DISPATCH_ENABLED=false
 ```
 
-Optional catalog controls are `GITHUB_CATALOG_CACHE_SECONDS` (15–300 seconds) and `GITHUB_CATALOG_MAX_CANDIDATES` (1–20 builds per component). The private key is never returned to the browser.
+Keep `GITHUB_CATALOG_DISPATCH_ENABLED=false` until the production SSM target, protected environment, and deployment scripts have been verified. Change it to `true` only to activate dispatch. Optional catalog controls are `GITHUB_CATALOG_CACHE_SECONDS` (15–300 seconds) and `GITHUB_CATALOG_MAX_CANDIDATES` (1–20 builds per component). The private key and generated workflow inputs are never returned for browser editing.
 
 Run the catalog contract tests with:
 

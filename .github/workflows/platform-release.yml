@@ -1,4 +1,5 @@
 name: Coordinate Fanal Platform Release
+run-name: Fanal ${{ inputs.operation }} ${{ inputs.platform_version }} · ${{ inputs.release_request_id || github.run_id }}
 
 on:
   workflow_dispatch:
@@ -58,6 +59,10 @@ on:
         required: true
         default: false
         type: boolean
+      release_request_id:
+        description: Optional Owner Release Center correlation UUID
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -78,6 +83,7 @@ jobs:
         shell: bash
         env:
           CONFIRMED: ${{ inputs.confirm_operation }}
+          RELEASE_REQUEST_ID: ${{ inputs.release_request_id }}
         run: |
           set -Eeuo pipefail
           if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
@@ -86,6 +92,10 @@ jobs:
           fi
           if [[ "$CONFIRMED" != "true" ]]; then
             echo "::error::Run the workflow again and select confirm_operation."
+            exit 1
+          fi
+          if [[ -n "$RELEASE_REQUEST_ID" && ! "$RELEASE_REQUEST_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
+            echo "::error::release_request_id must be a valid UUID v4 when provided."
             exit 1
           fi
 
@@ -241,10 +251,15 @@ jobs:
 
       - name: Summarize platform operation
         shell: bash
+        env:
+          RELEASE_REQUEST_ID: ${{ inputs.release_request_id }}
         run: |
           echo "### Fanal platform operation" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- Operation: \`${{ inputs.operation }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "$RELEASE_REQUEST_ID" ]]; then
+            echo "- Release request ID: \`$RELEASE_REQUEST_ID\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ "${{ inputs.operation }}" != "rollback-candidate" ]]; then
             echo "- Platform version: \`${{ inputs.platform_version }}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- Initial feature stage policy: \`test\` (activation remains manual)" >> "$GITHUB_STEP_SUMMARY"

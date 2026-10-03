@@ -6,12 +6,18 @@ The project follows Semantic Versioning 2.0.0. Released entries are immutable; c
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-02
+
 ### Added
 
+- Added guarded Owner Release Center dispatch for validated `deploy-candidate` operations, including owner-only authorization, CSRF protection, explicit confirmation, duplicate prevention, and workflow request correlation.
+- Added server-side revalidation that reloads trusted GitHub artifacts and regenerates the immutable platform manifest before every dispatch.
 - Added the coordinated Fanal platform release manifest contract and validation tooling for immutable API, Main, and Owner image combinations.
 
 ### Changed
 
+- Updated the platform workflow and release guide for Release Center candidate deployment while preserving the protected GitHub environment approval gate.
+- Changed the GitHub Catalog App requirement to Actions read-and-write access and kept production dispatch disabled by default until explicitly activated.
 - Parameterized the production Owner image through `FANAL_OWNER_IMAGE` while preserving `fanalarkgroup/fanal_owner:latest` as the default.
 - Changed the `master` deployment to select the exact image digest produced by its build and verify the running image, version, revision, and automatic rollback state on EC2.
 - Made component-only automatic deployment an opt-in emergency path and added the manually approved platform coordinator for normal deployments.

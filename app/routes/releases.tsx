@@ -1,6 +1,7 @@
-import type { LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
+import { randomUUID } from 'node:crypto'
+import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remix-run/node'
 import { json } from '@remix-run/node'
-import { Link, useLoaderData } from '@remix-run/react'
+import { Link, useActionData, useLoaderData } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
 import { PlatformReleaseComposer } from '~/components/platform-release-composer'
 import { PlatformShell } from '~/components/platform-shell'
@@ -16,14 +17,30 @@ import {
 } from '~/models/platform-release-candidate'
 import { getReadOnlyReleaseCatalog } from '~/utils/github-release-catalog.server'
 import {
+  dispatchPlatformReleaseCandidate,
+  isPlatformReleaseDispatchEnabled,
+  PlatformReleaseDispatchError,
+} from '~/utils/github-platform-release-dispatch.server'
+import {
   composePlatformReleaseCandidate,
   getPlatformVersionOptions,
 } from '~/utils/platform-release-selection.js'
+import {
+  findActivePlatformOperation,
+  resolveTrustedComponentSelection,
+} from '~/utils/platform-release-action.js'
 import { requirePlatformAuthState } from '~/utils/session.server'
+import {
+  getOrCreateReleaseCsrfToken,
+  verifyReleaseCsrfToken,
+} from '~/utils/csrf.server'
 import { buildFanalMeta } from '~/utils/site-meta'
 
 type LoaderData = {
+  canDispatch: boolean
   catalog: ReadOnlyReleaseCatalog | null
+  csrfToken: string
+  dispatchEnabled: boolean
   error?: string
   platformVersionSelection: string
   preview: PlatformReleaseCandidatePreview | null
@@ -33,7 +50,16 @@ type LoaderData = {
   viewerRoles: string[]
 }
 
+type ReleaseActionData = {
+  message: string
+  ok: boolean
+  requestId?: string
+  runId?: number | null
+  runUrl?: string
+}
+
 const releaseViewerRoles = new Set(['PLATFORM_OWNER', 'PLATFORM_ADMIN'])
+const releaseDispatcherRole = 'PLATFORM_OWNER'
 
 export const meta: MetaFunction = () => buildFanalMeta('Release Center')
 
@@ -46,30 +72,16 @@ function defaultSelection(
   return newestCandidate ? `artifact:${newestCandidate.artifactId}` : ''
 }
 
-function resolveComponentSelection(
-  catalog: ReadOnlyReleaseCatalog,
-  component: ReleaseComponentName,
-  reference: string
-): PlatformReleaseComponent | null {
-  if (reference === 'stable') {
-    return catalog.stable?.manifest.components[component] ?? null
-  }
-  const match = /^artifact:(\d+)$/.exec(reference)
-  if (!match) return null
-  const artifactId = Number(match[1])
-  const candidate = catalog.components[component].candidates.find(
-    (entry) => entry.artifactId === artifactId
-  )
-  return candidate
-    ? { image: candidate.image, revision: candidate.revision, version: candidate.version }
-    : null
-}
-
 export async function loader({ request }: LoaderFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   if (!authState.user.roles.some((role) => releaseViewerRoles.has(role))) {
     throw new Response('You are not authorized to view platform releases.', { status: 403 })
   }
+
+  const csrf = await getOrCreateReleaseCsrfToken(request)
+  const responseOptions = csrf.setCookie
+    ? { headers: { 'Set-Cookie': csrf.setCookie } }
+    : undefined
 
   const url = new URL(request.url)
   const forceRefresh = url.searchParams.get('refresh') === '1'
@@ -89,7 +101,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const resolvedComponents = Object.fromEntries(
       releaseComponentNames.map((component) => [
         component,
-        resolveComponentSelection(catalog, component, selections[component]),
+        resolveTrustedComponentSelection(catalog, component, selections[component]),
       ])
     ) as Record<ReleaseComponentName, PlatformReleaseComponent | null>
     const preview =
@@ -101,17 +113,23 @@ export async function loader({ request }: LoaderFunctionArgs) {
           }) as PlatformReleaseCandidatePreview)
         : null
     return json<LoaderData>({
+      canDispatch: authState.user.roles.includes(releaseDispatcherRole),
       catalog,
+      csrfToken: csrf.token,
+      dispatchEnabled: isPlatformReleaseDispatchEnabled(),
       platformVersionSelection,
       preview,
       previewRequested,
       selections,
       versionOptions,
       viewerRoles: authState.user.roles,
-    })
+    }, responseOptions)
   } catch (error) {
     return json<LoaderData>({
+      canDispatch: authState.user.roles.includes(releaseDispatcherRole),
       catalog: null,
+      csrfToken: csrf.token,
+      dispatchEnabled: isPlatformReleaseDispatchEnabled(),
       error:
         error instanceof Error
           ? error.message
@@ -122,7 +140,115 @@ export async function loader({ request }: LoaderFunctionArgs) {
       selections: { api: '', main: '', owner: '' },
       versionOptions: [],
       viewerRoles: authState.user.roles,
+    }, responseOptions)
+  }
+}
+
+function actionError(message: string, status: number) {
+  return json<ReleaseActionData>({ message, ok: false }, { status })
+}
+
+export async function action({ request }: ActionFunctionArgs) {
+  const authState = await requirePlatformAuthState(request)
+  if (!authState.user.roles.includes(releaseDispatcherRole)) {
+    return actionError('Only a PLATFORM_OWNER can dispatch a platform candidate.', 403)
+  }
+
+  if (request.method !== 'POST') {
+    return actionError('This release operation requires POST.', 405)
+  }
+
+  const formData = await request.formData()
+  if (!(await verifyReleaseCsrfToken(request, formData.get('_csrf')))) {
+    return actionError('The release form expired or failed its security check. Refresh and try again.', 403)
+  }
+  if (formData.get('_intent') !== 'deploy-candidate') {
+    return actionError('Unsupported release operation.', 400)
+  }
+  if (formData.get('confirmOperation') !== 'deploy-candidate') {
+    return actionError('Explicit deployment confirmation is required.', 400)
+  }
+  if (!isPlatformReleaseDispatchEnabled()) {
+    return actionError(
+      'Release dispatch is disabled on this Owner service. Production activation must be completed first.',
+      503
+    )
+  }
+
+  try {
+    const catalog = await getReadOnlyReleaseCatalog({ forceRefresh: true })
+    if (catalog.stableError) return actionError(catalog.stableError, 409)
+    if (catalog.historyError) {
+      return actionError(
+        'Platform workflow history cannot be verified, so dispatch is blocked for safety.',
+        503
+      )
+    }
+    const activeOperation = findActivePlatformOperation(catalog.history)
+    if (activeOperation) {
+      return actionError(
+        `Platform run #${activeOperation.runNumber} is still ${activeOperation.status}. Wait for it to finish before dispatching another candidate.`,
+        409
+      )
+    }
+
+    const selections = Object.fromEntries(
+      releaseComponentNames.map((component) => [
+        component,
+        String(formData.get(component) || ''),
+      ])
+    ) as Record<ReleaseComponentName, string>
+    const resolvedComponents = Object.fromEntries(
+      releaseComponentNames.map((component) => [
+        component,
+        resolveTrustedComponentSelection(catalog, component, selections[component]),
+      ])
+    ) as Record<ReleaseComponentName, PlatformReleaseComponent | null>
+
+    if (releaseComponentNames.some((component) => !resolvedComponents[component])) {
+      return actionError(
+        'One or more selected build artifacts are no longer trusted or available. Refresh and compose the candidate again.',
+        409
+      )
+    }
+
+    const preview = composePlatformReleaseCandidate({
+      components: resolvedComponents,
+      requestedPlatformVersion: String(formData.get('platformVersion') || 'auto'),
+      stableManifest: catalog.stable?.manifest ?? null,
+    }) as PlatformReleaseCandidatePreview
+    if (preview.issues.length > 0 || !preview.manifest) {
+      return actionError(
+        preview.issues[0]?.message || 'The candidate failed server-side validation.',
+        409
+      )
+    }
+
+    const requestId = randomUUID()
+    const result = await dispatchPlatformReleaseCandidate({
+      manifest: preview.manifest,
+      requestId,
     })
+    return json<ReleaseActionData>(
+      {
+        message: result.runId
+          ? `Candidate queued as GitHub workflow run #${result.runId}. Approval is still required in the protected platform_release_env environment.`
+          : 'Candidate accepted by GitHub. Open the platform workflow page to follow it; approval is still required in the protected environment.',
+        ok: true,
+        requestId,
+        runId: result.runId,
+        runUrl: result.runUrl,
+      },
+      { status: 202 }
+    )
+  } catch (error) {
+    if (error instanceof PlatformReleaseDispatchError) {
+      return actionError(error.message, error.status)
+    }
+    return actionError(
+      'The platform candidate could not be dispatched because its trusted release state could not be verified.',
+      503
+    )
   }
 }
 
@@ -231,7 +357,10 @@ function CandidateCard({ candidate }: { candidate: ComponentReleaseCandidate }) 
 
 export default function ReleasesRoute() {
   const {
+    canDispatch,
     catalog,
+    csrfToken,
+    dispatchEnabled,
     error,
     platformVersionSelection,
     preview,
@@ -240,6 +369,7 @@ export default function ReleasesRoute() {
     versionOptions,
     viewerRoles,
   } = useLoaderData<typeof loader>()
+  const actionData = useActionData<typeof action>()
   const componentCatalogs = catalog
     ? releaseComponentNames.map((component) => catalog.components[component])
     : []
@@ -269,9 +399,32 @@ export default function ReleasesRoute() {
       <div className="space-y-8">
         <FeedbackAlert
           tone="info"
-          title="Safe candidate composition"
-          message="Phase 3 can select builds and generate a validated manifest preview. It still cannot deploy, verify, promote, or roll back software."
+          title="Guarded candidate deployment"
+          message="Phase 4 can dispatch a validated candidate to the protected GitHub workflow. GitHub environment approval remains mandatory before the production command can run."
         />
+
+        {actionData ? (
+          <div className="space-y-3">
+            <FeedbackAlert
+              tone={actionData.ok ? 'success' : 'error'}
+              title={actionData.ok ? 'Deployment request queued' : 'Deployment request blocked'}
+              message={actionData.message}
+            />
+            {actionData.ok && actionData.runUrl ? (
+              <p className="text-sm text-slate-700">
+                Request ID: <code className="font-mono text-xs">{actionData.requestId}</code>.{' '}
+                <a
+                  href={actionData.runUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-bold text-emerald-800 underline decoration-emerald-300 underline-offset-4"
+                >
+                  Open GitHub Actions ↗
+                </a>
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {error ? (
           <FeedbackAlert
@@ -291,7 +444,10 @@ export default function ReleasesRoute() {
             </section>
 
             <PlatformReleaseComposer
+              canDispatch={canDispatch}
               catalog={catalog}
+              csrfToken={csrfToken}
+              dispatchEnabled={dispatchEnabled}
               platformVersionSelection={platformVersionSelection}
               preview={preview}
               previewRequested={previewRequested}
