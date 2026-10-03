@@ -69,6 +69,19 @@ export type StablePlatformRelease = {
   workflowRunUrl: string
 }
 
+export type PlatformReleaseEvidence = {
+  completedAt: string
+  workflowRunId: number
+  workflowRunUrl: string
+}
+
+export type ActivePlatformCandidate = {
+  deployment: PlatformReleaseEvidence
+  manifest: PlatformReleaseManifest
+  status: 'deployed' | 'verified'
+  verification?: PlatformReleaseEvidence
+}
+
 export type ReleaseCandidateIssue = {
   code: string
   component?: ReleaseComponentName
@@ -101,6 +114,8 @@ export type PlatformReleaseCandidatePreview = {
 }
 
 export type ReadOnlyReleaseCatalog = {
+  activeCandidate: ActivePlatformCandidate | null
+  candidateError?: string
   components: Record<ReleaseComponentName, ComponentReleaseCatalog>
   history: PlatformReleaseHistoryItem[]
   historyError?: string

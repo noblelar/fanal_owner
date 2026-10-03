@@ -97,3 +97,41 @@ test('extracts a validated promoted platform manifest bound to its workflow run'
     manifest
   )
 })
+
+test('binds candidate manifests to their exact deploy and verify artifact operations', () => {
+  const manifest = buildPlatformReleaseManifest({
+    platformVersion: '1.4.0',
+    apiImage: `docker.io/fanalarkgroup/fanalapi@sha256:${'a'.repeat(64)}`,
+    apiVersion: '1.2.0',
+    apiRevision: '1'.repeat(40),
+    mainImage: `docker.io/fanalarkgroup/fanal@sha256:${'b'.repeat(64)}`,
+    mainVersion: '1.3.0',
+    mainRevision: '2'.repeat(40),
+    ownerImage: `docker.io/fanalarkgroup/fanal_owner@sha256:${'c'.repeat(64)}`,
+    ownerVersion: '1.1.0',
+    ownerRevision: '3'.repeat(40),
+  })
+  const archive = zipSync({
+    'platform-release.json': strToU8(JSON.stringify(manifest)),
+  })
+
+  for (const operation of ['deploy-candidate', 'verify-candidate']) {
+    assert.deepEqual(
+      parsePlatformReleaseArtifact(archive, {
+        artifactName: `fanal-platform-1.4.0-${operation}-987654321`,
+        operation,
+        workflowRunId: 987654321,
+      }),
+      manifest
+    )
+  }
+  assert.throws(
+    () =>
+      parsePlatformReleaseArtifact(archive, {
+        artifactName: 'fanal-platform-1.4.0-promote-candidate-987654321',
+        operation: 'verify-candidate',
+        workflowRunId: 987654321,
+      }),
+    /artifact-name-mismatch/
+  )
+})

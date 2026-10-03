@@ -54,7 +54,9 @@ export function PlatformReleaseComposer({
   selections,
   versionOptions,
 }: PlatformReleaseComposerProps) {
-  const compositionBlocked = Boolean(catalog.stableError)
+  const compositionBlocked = Boolean(
+    catalog.stableError || catalog.candidateError || catalog.activeCandidate
+  )
 
   return (
     <section
@@ -64,7 +66,7 @@ export function PlatformReleaseComposer({
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">
-            Phase 4
+            Phase 5
           </p>
           <h2 id="candidate-composer-heading" className="mt-2 text-2xl font-black tracking-tight text-slate-950">
             Compose a release candidate
@@ -74,11 +76,25 @@ export function PlatformReleaseComposer({
           </p>
         </div>
         <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-bold text-sky-950">
-          Guarded dispatch
+          Lifecycle aware
         </span>
       </div>
 
-      {catalog.stable ? (
+      {catalog.activeCandidate ? (
+        <FeedbackAlert
+          tone="info"
+          title="Candidate composition paused"
+          message={`Platform ${catalog.activeCandidate.manifest.platformVersion} is currently ${catalog.activeCandidate.status}. Complete its verification and promotion lifecycle before composing another candidate.`}
+          className="mt-5"
+        />
+      ) : catalog.candidateError ? (
+        <FeedbackAlert
+          tone="warning"
+          title="Candidate composition paused"
+          message={catalog.candidateError}
+          className="mt-5"
+        />
+      ) : catalog.stable ? (
         <div className="mt-5 rounded-[1.4rem] border border-emerald-200 bg-emerald-50/70 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

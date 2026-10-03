@@ -11,6 +11,11 @@ import {
   githubDispatchFailure,
 } from '~/utils/platform-release-dispatch.js'
 
+export type PlatformReleaseDispatchOperation =
+  | 'deploy-candidate'
+  | 'verify-candidate'
+  | 'promote-candidate'
+
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000
 const DISCOVERY_ATTEMPTS = 4
 const DISCOVERY_DELAY_MS = 750
@@ -41,17 +46,24 @@ export function isPlatformReleaseDispatchEnabled() {
   return process.env.GITHUB_CATALOG_DISPATCH_ENABLED?.trim().toLowerCase() === 'true'
 }
 
-function dispatchFingerprint(manifest: PlatformReleaseManifest) {
+function dispatchFingerprint(
+  operation: PlatformReleaseDispatchOperation,
+  manifest: PlatformReleaseManifest
+) {
   return createHash('sha256')
-    .update(JSON.stringify(manifest))
+    .update(`${operation}\n${JSON.stringify(manifest)}`)
     .digest('hex')
 }
 
-function reserveDispatch(manifest: PlatformReleaseManifest, now = Date.now()) {
-  const key = dispatchFingerprint(manifest)
+function reserveDispatch(
+  operation: PlatformReleaseDispatchOperation,
+  manifest: PlatformReleaseManifest,
+  now = Date.now()
+) {
+  const key = dispatchFingerprint(operation, manifest)
   if (!recentDispatches.reserve(key, now)) {
     throw new PlatformReleaseDispatchError(
-      'This exact platform candidate was already queued recently. Wait for the existing workflow run instead of dispatching it again.',
+      `This exact ${operation} request was already queued recently. Wait for the existing workflow run instead of dispatching it again.`,
       409
     )
   }
@@ -98,7 +110,8 @@ async function discoverWorkflowRun(
   return { runId: null, runUrl: workflowUrl }
 }
 
-export async function dispatchPlatformReleaseCandidate(options: {
+export async function dispatchPlatformReleaseOperation(options: {
+  operation: PlatformReleaseDispatchOperation
   manifest: PlatformReleaseManifest
   requestId: string
 }) {
@@ -109,8 +122,12 @@ export async function dispatchPlatformReleaseCandidate(options: {
     )
   }
 
-  const dispatch = buildPlatformReleaseDispatch(options.manifest, options.requestId)
-  const reservationKey = reserveDispatch(options.manifest)
+  const dispatch = buildPlatformReleaseDispatch(
+    options.operation,
+    options.manifest,
+    options.requestId
+  )
+  const reservationKey = reserveDispatch(options.operation, options.manifest)
   let token: string
   try {
     token = await getGitHubCatalogInstallationToken()

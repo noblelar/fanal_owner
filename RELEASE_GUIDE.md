@@ -455,7 +455,7 @@ In the Fanal Owner application:
 8. Choose **Queue deploy candidate**.
 9. Open the linked GitHub Actions run and approve `platform_release_env` when prompted.
 
-The Release Center accepts only trusted artifact IDs. It reloads GitHub evidence and regenerates the manifest on the server immediately before dispatch, so image references and Git revisions cannot be typed or altered in the browser. `PLATFORM_ADMIN` access is view-only. If the dispatch control reports that it is disabled, stop and verify the GitHub App has **Actions: read and write**, then set `GITHUB_CATALOG_DISPATCH_ENABLED=true` on the Owner service and recreate only that service.
+The Release Center accepts only trusted artifact IDs. It reloads GitHub evidence and regenerates the manifest on the server immediately before dispatch, so image references and Git revisions cannot be typed or altered in the browser. While a candidate is active, the composer is paused and the Release Center presents only the next valid lifecycle action. `PLATFORM_ADMIN` access is view-only. If the dispatch control reports that it is disabled, stop and verify the GitHub App has **Actions: read and write**, then set `GITHUB_CATALOG_DISPATCH_ENABLED=true` on the Owner service and recreate only that service.
 
 The workflow validates the manifest, preserves it as a 90-day artifact, sends it through SSM, and waits for EC2. EC2 then:
 
@@ -584,23 +584,20 @@ Progression beyond `test` is a separate decision: `off` → `test` → `pilot` �
 
 ## 14. Re-verify and promote the exact candidate
 
-After candidate testing succeeds, run **Coordinate Fanal Platform Release** again with:
+After candidate testing succeeds:
 
-```text
-operation: verify-candidate
-confirm_operation: true
-```
+1. Return to **Release Center** and choose **Refresh catalog**.
+2. Confirm that the active platform version, component versions, revisions, image digests, and deployment-evidence link match the tested candidate.
+3. Select the explicit verification-confirmation checkbox.
+4. Choose **Queue verify candidate**.
+5. Open the linked GitHub Actions run, approve `platform_release_env`, and wait for a successful result.
+6. Return to **Release Center** and choose **Refresh catalog** again.
+7. Confirm the status is **Verified · ready to promote** and open the verification-evidence link if any value is in doubt.
+8. Select the explicit promotion-confirmation checkbox.
+9. Choose **Queue promote candidate**.
+10. Approve `platform_release_env` and wait for a successful promotion.
 
-Enter exactly the same platform version and all nine component values. Do not copy newer build summaries.
-
-After `verify-candidate` succeeds, run it a third time with:
-
-```text
-operation: promote-candidate
-confirm_operation: true
-```
-
-Again, enter exactly the same values. Promotion is rejected if any artifact differs from the stored tested candidate. Promotion does not rebuild or replace containers; it records the verified combination as stable.
+The Release Center derives the active candidate from successful GitHub workflow artifacts and sends the manifest preserved by the original deployment. It does not accept image digests, versions, or revisions from the verification or promotion form. A stale page, a changed candidate, missing evidence, a manifest mismatch, an active workflow run, or an attempt to promote before successful verification is rejected. Promotion does not rebuild or replace containers; it records the verified combination as stable.
 
 Confirm on EC2:
 
@@ -788,8 +785,8 @@ A component-only deployment invalidates the previously tested platform combinati
 [ ] Email smoke test passed
 [ ] Functional and authorization smoke tests passed
 [ ] Demo School-only rollout verified, if applicable
-[ ] verify-candidate successful with identical inputs
-[ ] promote-candidate successful with identical inputs
+[ ] Release Center verify-candidate successful with preserved deployment evidence
+[ ] Release Center promote-candidate successful with preserved verification evidence
 [ ] platform.env reports stable
 [ ] Changed component release workflows published
 [ ] Release evidence recorded
