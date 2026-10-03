@@ -1,4 +1,4 @@
-import { Form } from '@remix-run/react'
+import { Form, useNavigation } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
 import {
   releaseComponentNames,
@@ -9,7 +9,10 @@ import {
 } from '~/models/platform-release-candidate'
 
 type PlatformReleaseComposerProps = {
+  canDispatch: boolean
   catalog: ReadOnlyReleaseCatalog
+  csrfToken: string
+  dispatchEnabled: boolean
   platformVersionSelection: string
   preview: PlatformReleaseCandidatePreview | null
   previewRequested: boolean
@@ -41,7 +44,10 @@ function bumpBadgeClass(bump: string) {
 }
 
 export function PlatformReleaseComposer({
+  canDispatch,
   catalog,
+  csrfToken,
+  dispatchEnabled,
   platformVersionSelection,
   preview,
   previewRequested,
@@ -58,17 +64,17 @@ export function PlatformReleaseComposer({
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">
-            Phase 3
+            Phase 4
           </p>
           <h2 id="candidate-composer-heading" className="mt-2 text-2xl font-black tracking-tight text-slate-950">
             Compose a release candidate
           </h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Select trusted component builds, retain unchanged stable components, and preview a validated platform manifest. No deployment occurs in this phase.
+            Select trusted component builds, preview a validated platform manifest, and submit it to the protected deployment workflow when every guard passes.
           </p>
         </div>
-        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-950">
-          Preview only
+        <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-bold text-sky-950">
+          Guarded dispatch
         </span>
       </div>
 
@@ -183,14 +189,39 @@ export function PlatformReleaseComposer({
       </Form>
 
       {previewRequested && !preview && compositionBlocked ? null : preview ? (
-        <CandidatePreview preview={preview} />
+        <CandidatePreview
+          canDispatch={canDispatch}
+          csrfToken={csrfToken}
+          dispatchEnabled={dispatchEnabled}
+          platformVersionSelection={platformVersionSelection}
+          preview={preview}
+          selections={selections}
+        />
       ) : null}
     </section>
   )
 }
 
-function CandidatePreview({ preview }: { preview: PlatformReleaseCandidatePreview }) {
+function CandidatePreview({
+  canDispatch,
+  csrfToken,
+  dispatchEnabled,
+  platformVersionSelection,
+  preview,
+  selections,
+}: {
+  canDispatch: boolean
+  csrfToken: string
+  dispatchEnabled: boolean
+  platformVersionSelection: string
+  preview: PlatformReleaseCandidatePreview
+  selections: Record<ReleaseComponentName, string>
+}) {
   const isValid = preview.issues.length === 0 && preview.manifest
+  const navigation = useNavigation()
+  const isDispatching =
+    navigation.state === 'submitting' &&
+    navigation.formData?.get('_intent') === 'deploy-candidate'
 
   return (
     <div className="mt-8 border-t border-slate-200 pt-6" aria-live="polite">
@@ -274,6 +305,63 @@ function CandidatePreview({ preview }: { preview: PlatformReleaseCandidatePrevie
               )
             })}
           </div>
+        </div>
+      ) : null}
+
+      {isValid ? (
+        <div className="mt-6 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-5">
+          <p className="font-black text-slate-950">Deploy this candidate</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            The server will reload the GitHub catalog, re-resolve every artifact ID, regenerate this manifest, and reject stale or altered values. A successful request still waits for approval in <code>platform_release_env</code>.
+          </p>
+
+          {!canDispatch ? (
+            <FeedbackAlert
+              tone="warning"
+              title="Owner authorization required"
+              message="PLATFORM_ADMIN users may inspect releases, but only a PLATFORM_OWNER can dispatch a candidate."
+              className="mt-4"
+            />
+          ) : !dispatchEnabled ? (
+            <FeedbackAlert
+              tone="warning"
+              title="Dispatch is disabled"
+              message="Set GITHUB_CATALOG_DISPATCH_ENABLED=true on the Owner service only after the production GitHub App permission and deployment path are ready."
+              className="mt-4"
+            />
+          ) : (
+            <Form method="post" className="mt-5 space-y-4">
+              <input type="hidden" name="_intent" value="deploy-candidate" />
+              <input type="hidden" name="_csrf" value={csrfToken} />
+              <input type="hidden" name="api" value={selections.api} />
+              <input type="hidden" name="main" value={selections.main} />
+              <input type="hidden" name="owner" value={selections.owner} />
+              <input
+                type="hidden"
+                name="platformVersion"
+                value={platformVersionSelection}
+              />
+              <label className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                <input
+                  type="checkbox"
+                  name="confirmOperation"
+                  value="deploy-candidate"
+                  required
+                  className="mt-1 h-4 w-4 accent-emerald-900"
+                />
+                <span>
+                  I confirm that platform {preview.selectedPlatformVersion} should be queued for candidate deployment using these exact immutable component builds.
+                </span>
+              </label>
+              <button
+                type="submit"
+                disabled={isDispatching}
+                className="inline-flex items-center justify-center rounded-2xl bg-emerald-900 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-800 disabled:cursor-wait disabled:bg-slate-400"
+              >
+                {isDispatching ? 'Queueing candidate…' : 'Queue deploy candidate'}
+              </button>
+            </Form>
+          )}
         </div>
       ) : null}
     </div>

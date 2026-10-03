@@ -443,16 +443,19 @@ Check every value twice. An image belongs in an `*_image` field; a Git commit be
 
 ## 11. Deploy the candidate
 
-In Fanal Owner GitHub Actions:
+In the Fanal Owner application:
 
-1. Open **Coordinate Fanal Platform Release**.
-2. Select **Run workflow**.
-3. Select branch `master`.
-4. Set `operation` to `deploy-candidate`.
-5. Enter `platform_version`.
-6. Enter all API, Main, and Owner image/version/revision values from the worksheet.
-7. Set `confirm_operation` to `true`.
-8. Run the workflow and approve `platform_release_env` when prompted.
+1. Sign in with a `PLATFORM_OWNER` account and open **Release Center** (`/releases`).
+2. Choose **Refresh catalog** so all recent successful component builds are visible.
+3. Select the API, Main, and Owner builds. Use **Keep stable** for any unchanged component.
+4. Select the platform version or keep the safe automatic recommendation.
+5. Choose **Preview candidate** and resolve every blocker shown by the server.
+6. Review the exact immutable digest, version, and revision for all three components.
+7. Select the explicit deployment-confirmation checkbox.
+8. Choose **Queue deploy candidate**.
+9. Open the linked GitHub Actions run and approve `platform_release_env` when prompted.
+
+The Release Center accepts only trusted artifact IDs. It reloads GitHub evidence and regenerates the manifest on the server immediately before dispatch, so image references and Git revisions cannot be typed or altered in the browser. `PLATFORM_ADMIN` access is view-only. If the dispatch control reports that it is disabled, stop and verify the GitHub App has **Actions: read and write**, then set `GITHUB_CATALOG_DISPATCH_ENABLED=true` on the Owner service and recreate only that service.
 
 The workflow validates the manifest, preserves it as a 90-day artifact, sends it through SSM, and waits for EC2. EC2 then:
 
