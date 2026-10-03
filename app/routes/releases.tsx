@@ -8,6 +8,7 @@ import { PlatformReleaseLifecycle } from '~/components/platform-release-lifecycl
 import { PlatformShell } from '~/components/platform-shell'
 import {
   releaseComponentNames,
+  type ComponentReleaseCatalog,
   type ComponentReleaseCandidate,
   type PlatformReleaseCandidatePreview,
   type PlatformReleaseComponent,
@@ -78,6 +79,32 @@ function defaultSelection(
   if (catalog.stable) return 'stable'
   const newestCandidate = catalog.components[component].candidates[0]
   return newestCandidate ? `artifact:${newestCandidate.artifactId}` : ''
+}
+
+function componentCatalogIssueMessages(component: ComponentReleaseCatalog) {
+  const messages: string[] = []
+  const counts = component.issueCounts
+  if (counts.workflowArtifactLookupsFailed > 0) {
+    messages.push(
+      `${counts.workflowArtifactLookupsFailed} successful workflow run${counts.workflowArtifactLookupsFailed === 1 ? '' : 's'} could not be checked for artifacts.`
+    )
+  }
+  if (counts.artifactDownloadsFailed > 0) {
+    messages.push(
+      `${counts.artifactDownloadsFailed} artifact${counts.artifactDownloadsFailed === 1 ? '' : 's'} could not be downloaded from GitHub.`
+    )
+  }
+  if (counts.artifactValidationFailed > 0) {
+    messages.push(
+      `${counts.artifactValidationFailed} artifact${counts.artifactValidationFailed === 1 ? ' was' : 's were'} excluded because the trusted metadata contract failed validation.`
+    )
+  }
+  if (counts.expiredArtifacts > 0) {
+    messages.push(
+      `${counts.expiredArtifacts} artifact${counts.expiredArtifacts === 1 ? ' has' : 's have'} expired in GitHub.`
+    )
+  }
+  return messages
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -556,10 +583,12 @@ export default function ReleasesRoute() {
                       />
                     ) : null}
 
-                    {component.skippedArtifactCount > 0 ? (
-                      <p className="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                        {component.skippedArtifactCount} artifact{component.skippedArtifactCount === 1 ? ' was' : 's were'} excluded because validation failed.
-                      </p>
+                    {componentCatalogIssueMessages(component).length > 0 ? (
+                      <ul className="mt-4 space-y-1 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                        {componentCatalogIssueMessages(component).map((message) => (
+                          <li key={message}>{message}</li>
+                        ))}
+                      </ul>
                     ) : null}
 
                     <div className="mt-5 space-y-4">
@@ -574,7 +603,9 @@ export default function ReleasesRoute() {
                         <div className="rounded-[1.4rem] border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center">
                           <p className="font-semibold text-slate-800">No selectable builds yet</p>
                           <p className="mt-2 text-sm leading-6 text-slate-600">
-                            Merge the Phase 1 workflow into master and complete one successful build to publish this component&apos;s first metadata artifact.
+                            {component.error || componentCatalogIssueMessages(component).length > 0
+                              ? 'GitHub evidence was found, but no artifact passed every retrieval and trust check. Review the catalog warning and server diagnostics.'
+                              : 'No qualifying metadata artifact was found in the recent successful master builds for this component.'}
                           </p>
                         </div>
                       )}

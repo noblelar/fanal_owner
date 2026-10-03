@@ -6,6 +6,19 @@ The project follows Semantic Versioning 2.0.0. Released entries are immutable; c
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-03
+
+### Fixed
+
+- Fixed trusted component discovery by correlating metadata artifacts through their exact successful workflow runs instead of intersecting independently limited repository artifact and workflow-run lists.
+- Fixed GitHub artifact retrieval by explicitly following the short-lived authenticated ZIP redirect without forwarding installation credentials to the artifact storage host.
+- Fixed misleading Release Center warnings by reporting workflow lookup, download, expiry, and metadata-validation failures separately while preserving fail-closed selection and promotion guards.
+
+### Changed
+
+- Added safe structured release-catalog diagnostics containing repository, run, artifact, stage, and error category without logging tokens, private keys, authorization headers, or signed download URLs.
+- Changed stable and candidate evidence discovery to load artifacts from the exact deploy, verify, and promote workflow runs.
+
 ## [1.3.0] - 2026-10-03
 
 ### Added

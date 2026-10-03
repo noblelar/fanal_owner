@@ -7,6 +7,10 @@ const catalogSource = await readFile(
   new URL('../app/utils/github-release-catalog.server.ts', import.meta.url),
   'utf8'
 )
+const catalogClientSource = await readFile(
+  new URL('../app/utils/github-catalog-client.server.js', import.meta.url),
+  'utf8'
+)
 const appAuthSource = await readFile(
   new URL('../app/utils/github-app.server.ts', import.meta.url),
   'utf8'
@@ -76,6 +80,17 @@ test('catalog preserves stable evidence and derives the active lifecycle indepen
   assert.match(catalogSource, /manifestsMatch/)
   assert.match(lifecycleSource, /Deployment evidence/)
   assert.match(lifecycleSource, /Verification evidence/)
+})
+
+test('catalog correlates artifacts per workflow run and classifies archive failures', () => {
+  assert.match(catalogSource, /listWorkflowRunArtifacts/)
+  assert.doesNotMatch(catalogSource, /listRepositoryArtifacts/)
+  assert.match(catalogSource, /artifactDownloadsFailed/)
+  assert.match(catalogSource, /artifactValidationFailed/)
+  assert.match(catalogClientSource, /redirect: 'manual'/)
+  assert.match(catalogClientSource, /redirect: 'error'/)
+  assert.match(catalogClientSource, /artifact_response_not_zip/)
+  assert.match(catalogClientSource, /Authorization: `Bearer \$\{token\}`/)
 })
 
 test('catalog and dispatch credentials remain server-side installation credentials', () => {
