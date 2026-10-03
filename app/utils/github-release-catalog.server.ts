@@ -16,15 +16,23 @@ import {
   githubCatalogRequestHeaders,
 } from '~/utils/github-app.server'
 import {
+  downloadArtifactArchive,
+  GitHubCatalogRequestError,
+  githubCatalogErrorDetails,
+  githubJsonRequest,
+  isGitHubCatalogRequestError,
+  listWorkflowRunArtifacts,
+} from '~/utils/github-catalog-client.server.js'
+import {
   derivePlatformReleaseLineage,
   manifestsMatch,
 } from '~/utils/platform-release-state.js'
 
-const GITHUB_API_URL = 'https://api.github.com'
 const DEFAULT_CACHE_SECONDS = 60
 const DEFAULT_MAX_CANDIDATES = 10
+const DEFAULT_MAX_COMPONENT_RUNS_TO_SCAN = 20
 const MAX_WORKFLOW_RUNS = 50
-const MAX_REPOSITORY_ARTIFACTS = 100
+const CATALOG_REQUEST_CONCURRENCY = 5
 
 const componentConfigurations: Record<
   ReleaseComponentName,
@@ -57,7 +65,6 @@ type GitHubWorkflowRunsResponse = {
 }
 
 type GitHubArtifact = {
-  archive_download_url: string
   created_at: string
   expired: boolean
   expires_at: string | null
@@ -68,10 +75,6 @@ type GitHubArtifact = {
     head_sha: string
     id: number
   } | null
-}
-
-type GitHubArtifactsResponse = {
-  artifacts: GitHubArtifact[]
 }
 
 type CachedCatalog = {
@@ -109,52 +112,23 @@ function getMaximumCandidates() {
   )
 }
 
+function getMaximumComponentRunsToScan() {
+  return boundedInteger(
+    process.env.GITHUB_CATALOG_MAX_RUNS_SCANNED,
+    DEFAULT_MAX_COMPONENT_RUNS_TO_SCAN,
+    10,
+    MAX_WORKFLOW_RUNS
+  )
+}
+
 function repositoryApiPath(repository: string, suffix: string) {
   const [owner, name] = repository.split('/')
   if (!owner || !name) throw new Error('A configured GitHub repository is invalid.')
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}${suffix}`
 }
 
-async function githubResponse(pathOrUrl: string, token: string) {
-  const url = pathOrUrl.startsWith('https://') ? pathOrUrl : `${GITHUB_API_URL}${pathOrUrl}`
-  let response: Response
-  try {
-    response = await fetch(url, {
-      headers: {
-        ...githubCatalogRequestHeaders,
-        Authorization: `Bearer ${token}`,
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(20_000),
-    })
-  } catch {
-    throw new Error('GitHub could not be reached while loading the release catalog.')
-  }
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error('The GitHub Catalog App is not authorized to read release artifacts.')
-    }
-    if (response.status === 404) {
-      throw new Error('A configured GitHub repository or workflow could not be found.')
-    }
-    if (response.status === 429) {
-      throw new Error('GitHub temporarily rate-limited the release catalog. Please retry shortly.')
-    }
-    throw new Error(`GitHub release-catalog request failed with HTTP ${response.status}.`)
-  }
-
-  return response
-}
-
 async function githubJson<T>(path: string, token: string) {
-  const response = await githubResponse(path, token)
-  return (await response.json()) as T
-}
-
-async function githubBytes(url: string, token: string) {
-  const response = await githubResponse(url, token)
-  return new Uint8Array(await response.arrayBuffer())
+  return (await githubJsonRequest(path, token, githubCatalogRequestHeaders)) as T
 }
 
 async function listSuccessfulBuildRuns(repository: string, token: string) {
@@ -169,89 +143,201 @@ async function listSuccessfulBuildRuns(repository: string, token: string) {
     token
   )
 
-  return new Map(
-    response.workflow_runs
-      .filter(
-        (run) =>
-          run.conclusion === 'success' &&
-          run.event === 'push' &&
-          run.head_branch === 'master' &&
-          /^[0-9a-f]{40}$/.test(run.head_sha)
-      )
-      .map((run) => [run.id, run])
-  )
+  return response.workflow_runs
+    .filter(
+      (run) =>
+        run.conclusion === 'success' &&
+        run.event === 'push' &&
+        run.head_branch === 'master' &&
+        Number.isSafeInteger(run.run_attempt) &&
+        run.run_attempt > 0 &&
+        /^[0-9a-f]{40}$/.test(run.head_sha)
+    )
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
 }
 
-async function listRepositoryArtifacts(repository: string, token: string) {
-  const query = new URLSearchParams({ per_page: String(MAX_REPOSITORY_ARTIFACTS) })
-  const response = await githubJson<GitHubArtifactsResponse>(
-    repositoryApiPath(repository, `/actions/artifacts?${query.toString()}`),
-    token
+function emptyIssueCounts() {
+  return {
+    artifactDownloadsFailed: 0,
+    artifactValidationFailed: 0,
+    expiredArtifacts: 0,
+    workflowArtifactLookupsFailed: 0,
+  }
+}
+
+function logCatalogFailure(
+  error: unknown,
+  context: Record<string, number | string | null | undefined>
+) {
+  const details = githubCatalogErrorDetails(error)
+  const validationReason =
+    error instanceof Error
+      ? /^(?:Invalid component release artifact|Invalid platform release artifact): ([a-z0-9,-]+)$/.exec(
+          error.message
+        )?.[1]
+      : undefined
+  console.warn(
+    'release_catalog_failure',
+    JSON.stringify({
+      ...context,
+      code: details.code,
+      reason: validationReason,
+      status: details.status,
+    })
   )
-  return response.artifacts
 }
 
 async function loadComponentCatalog(component: ReleaseComponentName, token: string) {
   const configuration = componentConfigurations[component]
-  const [successfulRuns, artifacts] = await Promise.all([
-    listSuccessfulBuildRuns(configuration.repository, token),
-    listRepositoryArtifacts(configuration.repository, token),
-  ])
+  const successfulRuns = (
+    await listSuccessfulBuildRuns(configuration.repository, token)
+  ).slice(0, getMaximumComponentRunsToScan())
   const maximumCandidates = getMaximumCandidates()
-  const matchingArtifacts = artifacts
-    .filter(
-      (artifact) =>
-        !artifact.expired &&
-        artifact.name.startsWith(`component-release-${component}-`) &&
-        artifact.workflow_run?.id &&
-        successfulRuns.has(artifact.workflow_run.id)
-    )
-    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
-    .slice(0, maximumCandidates * 2)
-
   const candidates: ComponentReleaseCandidate[] = []
+  const issueCounts = emptyIssueCounts()
   let skippedArtifactCount = 0
 
-  for (const artifact of matchingArtifacts) {
-    if (candidates.length >= maximumCandidates) break
-    const run = successfulRuns.get(artifact.workflow_run!.id)
-    if (!run) continue
-
-    try {
-      const archive = await githubBytes(artifact.archive_download_url, token)
-      const metadata = parseComponentReleaseArtifact(archive, {
-        artifactName: artifact.name,
-        component,
-        headBranch: run.head_branch,
-        headSha: run.head_sha,
-        repository: configuration.repository,
-        workflowRunId: run.id,
-        workflowRunUrl: run.html_url,
+  for (
+    let offset = 0;
+    offset < successfulRuns.length && candidates.length < maximumCandidates;
+    offset += CATALOG_REQUEST_CONCURRENCY
+  ) {
+    const batch = successfulRuns.slice(offset, offset + CATALOG_REQUEST_CONCURRENCY)
+    const artifactResults = await Promise.all(
+      batch.map(async (run) => {
+        try {
+          const artifacts = (await listWorkflowRunArtifacts(
+            configuration.repository,
+            run.id,
+            token,
+            githubCatalogRequestHeaders
+          )) as GitHubArtifact[]
+          return { artifacts, error: null, run }
+        } catch (error) {
+          return { artifacts: [] as GitHubArtifact[], error, run }
+        }
       })
+    )
 
-      candidates.push({
-        artifactId: artifact.id,
-        artifactName: artifact.name,
-        artifactExpiresAt: artifact.expires_at,
-        branch: 'master',
-        component,
-        createdAt: metadata.created_at,
-        image: metadata.image,
-        repository: metadata.repository,
-        revision: metadata.revision,
-        version: metadata.version,
-        workflowRunAttempt: metadata.workflow_run_attempt,
-        workflowRunId: metadata.workflow_run_id,
-        workflowRunUrl: metadata.workflow_run_url,
-      })
-    } catch {
-      skippedArtifactCount += 1
+    for (const result of artifactResults) {
+      if (candidates.length >= maximumCandidates) break
+      const { run } = result
+      if (result.error) {
+        issueCounts.workflowArtifactLookupsFailed += 1
+        logCatalogFailure(result.error, {
+          component,
+          repository: configuration.repository,
+          stage: 'workflow_artifact_lookup',
+          workflowRunId: run.id,
+        })
+        continue
+      }
+
+      const expectedArtifactName = `component-release-${component}-${run.id}-${run.run_attempt}`
+      const matchingArtifacts = result.artifacts.filter(
+        (artifact) => artifact.name === expectedArtifactName
+      )
+      if (matchingArtifacts.length > 1) {
+        issueCounts.artifactValidationFailed += matchingArtifacts.length
+        skippedArtifactCount += matchingArtifacts.length
+        logCatalogFailure(new Error('ambiguous component release artifacts'), {
+          artifactName: expectedArtifactName,
+          component,
+          repository: configuration.repository,
+          stage: 'artifact_correlation',
+          workflowRunId: run.id,
+        })
+        continue
+      }
+      const artifact = matchingArtifacts[0]
+      if (!artifact) continue
+      if (artifact.expired) {
+        issueCounts.expiredArtifacts += 1
+        skippedArtifactCount += 1
+        logCatalogFailure(
+          new GitHubCatalogRequestError(
+            'github_artifact_expired',
+            'The component release artifact has expired.'
+          ),
+          {
+            artifactId: artifact.id,
+            artifactName: artifact.name,
+            component,
+            repository: configuration.repository,
+            stage: 'artifact_expiry',
+            workflowRunId: run.id,
+          }
+        )
+        continue
+      }
+
+      let archive: Uint8Array
+      try {
+        archive = await downloadArtifactArchive(
+          configuration.repository,
+          artifact.id,
+          token,
+          githubCatalogRequestHeaders
+        )
+      } catch (error) {
+        issueCounts.artifactDownloadsFailed += 1
+        skippedArtifactCount += 1
+        logCatalogFailure(error, {
+          artifactId: artifact.id,
+          artifactName: artifact.name,
+          component,
+          repository: configuration.repository,
+          stage: 'artifact_download',
+          workflowRunId: run.id,
+        })
+        continue
+      }
+
+      try {
+        const metadata = parseComponentReleaseArtifact(archive, {
+          artifactName: artifact.name,
+          component,
+          headBranch: run.head_branch,
+          headSha: run.head_sha,
+          repository: configuration.repository,
+          workflowRunId: run.id,
+          workflowRunUrl: run.html_url,
+        })
+
+        candidates.push({
+          artifactId: artifact.id,
+          artifactName: artifact.name,
+          artifactExpiresAt: artifact.expires_at,
+          branch: 'master',
+          component,
+          createdAt: metadata.created_at,
+          image: metadata.image,
+          repository: metadata.repository,
+          revision: metadata.revision,
+          version: metadata.version,
+          workflowRunAttempt: metadata.workflow_run_attempt,
+          workflowRunId: metadata.workflow_run_id,
+          workflowRunUrl: metadata.workflow_run_url,
+        })
+      } catch (error) {
+        issueCounts.artifactValidationFailed += 1
+        skippedArtifactCount += 1
+        logCatalogFailure(error, {
+          artifactId: artifact.id,
+          artifactName: artifact.name,
+          component,
+          repository: configuration.repository,
+          stage: 'artifact_validation',
+          workflowRunId: run.id,
+        })
+      }
     }
   }
 
   return {
     candidates,
     component,
+    issueCounts,
     label: configuration.label,
     repository: configuration.repository,
     skippedArtifactCount,
@@ -263,10 +349,16 @@ async function loadComponentCatalogSafely(component: ReleaseComponentName, token
     return await loadComponentCatalog(component, token)
   } catch (error) {
     const configuration = componentConfigurations[component]
+    logCatalogFailure(error, {
+      component,
+      repository: configuration.repository,
+      stage: 'component_catalog_load',
+    })
     return {
       candidates: [],
       component,
       error: error instanceof Error ? error.message : 'This component catalog is unavailable.',
+      issueCounts: emptyIssueCounts(),
       label: configuration.label,
       repository: configuration.repository,
       skippedArtifactCount: 0,
@@ -314,31 +406,99 @@ function platformOperation(value: string | null | undefined): PlatformReleaseOpe
     : null
 }
 
-function manifestPlatformOperation(
-  value: string | null | undefined
-): ManifestPlatformReleaseOperation | null {
-  const operation = platformOperation(value)
-  return operation === 'rollback-candidate' ? null : operation
-}
-
-function operationFromTitle(title: string | undefined) {
-  const match = /^Fanal (deploy-candidate|verify-candidate|promote-candidate|rollback-candidate)\b/.exec(
+function platformDetailsFromTitle(title: string | undefined) {
+  const match = /^Fanal (deploy-candidate|verify-candidate|promote-candidate|rollback-candidate)(?:\s+(\d+\.\d+\.\d+))?\b/.exec(
     title || ''
   )
-  return platformOperation(match?.[1])
+  return {
+    operation: platformOperation(match?.[1]),
+    platformVersion: match?.[2] || null,
+  }
+}
+
+async function findPlatformRunEvidence(
+  run: GitHubWorkflowRun,
+  expectedOperation: ManifestPlatformReleaseOperation,
+  repository: string,
+  token: string
+) {
+  const artifacts = (await listWorkflowRunArtifacts(
+    repository,
+    run.id,
+    token,
+    githubCatalogRequestHeaders
+  )) as GitHubArtifact[]
+  const matches = artifacts
+    .map((artifact) => ({ artifact, details: artifactOperation(artifact, run.id) }))
+    .filter(
+      (
+        value
+      ): value is {
+        artifact: GitHubArtifact
+        details: { operation: ManifestPlatformReleaseOperation; platformVersion: string }
+      } => value.details?.operation === expectedOperation
+    )
+
+  if (matches.length > 1) {
+    throw new Error('Ambiguous platform release evidence was returned for one workflow run.')
+  }
+  const match = matches[0]
+  if (!match || match.artifact.expired) return null
+  return {
+    artifact: match.artifact,
+    operation: expectedOperation,
+    platformVersion: match.details.platformVersion,
+  } satisfies PlatformRunEvidence
 }
 
 async function parseRunManifest(
   run: GitHubWorkflowRun,
   evidence: PlatformRunEvidence,
+  repository: string,
   token: string
 ) {
-  const archive = await githubBytes(evidence.artifact.archive_download_url, token)
+  const archive = await downloadArtifactArchive(
+    repository,
+    evidence.artifact.id,
+    token,
+    githubCatalogRequestHeaders
+  )
   return parsePlatformReleaseArtifact(archive, {
     artifactName: evidence.artifact.name,
     operation: evidence.operation,
     workflowRunId: run.id,
   })
+}
+
+function platformEvidenceFailureMessage(
+  error: unknown,
+  evidence: 'candidate' | 'promotion' | 'verification'
+) {
+  if (isGitHubCatalogRequestError(error)) {
+    if (error.code === 'github_artifact_unavailable') {
+      if (evidence === 'promotion') {
+        return 'The latest successful promotion artifact is unavailable or expired, so the current stable platform cannot be verified.'
+      }
+      if (evidence === 'verification') {
+        return 'The latest verification artifact is unavailable or expired, so promotion is blocked.'
+      }
+      return 'The active deployment artifact is unavailable or expired, so its exact candidate cannot be verified or promoted.'
+    }
+    if (evidence === 'promotion') {
+      return 'The latest successful promotion artifact could not be loaded from GitHub, so release operations are blocked.'
+    }
+    if (evidence === 'verification') {
+      return 'The latest verification artifact could not be loaded from GitHub, so promotion is blocked.'
+    }
+    return 'The active candidate artifact could not be loaded from GitHub, so verification and promotion are blocked.'
+  }
+  if (evidence === 'promotion') {
+    return 'The latest successful promotion manifest failed validation, so release operations are blocked.'
+  }
+  if (evidence === 'verification') {
+    return 'The latest verification manifest failed validation, so promotion is blocked.'
+  }
+  return 'The active candidate evidence failed validation, so verification and promotion are blocked.'
 }
 
 async function loadPlatformReleaseState(token: string) {
@@ -348,47 +508,33 @@ async function loadPlatformReleaseState(token: string) {
     per_page: String(MAX_WORKFLOW_RUNS),
   })
   const repository = componentConfigurations.owner.repository
-  const [response, artifacts] = await Promise.all([
-    githubJson<GitHubWorkflowRunsResponse>(
-      repositoryApiPath(
-        repository,
-        `/actions/workflows/platform-release.yml/runs?${query.toString()}`
-      ),
-      token
+  const response = await githubJson<GitHubWorkflowRunsResponse>(
+    repositoryApiPath(
+      repository,
+      `/actions/workflows/platform-release.yml/runs?${query.toString()}`
     ),
-    listRepositoryArtifacts(repository, token),
-  ])
-  const artifactEvidence = new Map<number, PlatformRunEvidence>()
-  for (const artifact of artifacts) {
-    const runId = artifact.workflow_run?.id
-    if (!runId || artifact.expired) continue
-    const evidence = artifactOperation(artifact, runId)
-    const operation = manifestPlatformOperation(evidence?.operation)
-    if (evidence && operation) {
-      artifactEvidence.set(runId, { artifact, operation, platformVersion: evidence.platformVersion })
-    }
-  }
+    token
+  )
 
   const history = response.workflow_runs.map(
-    (run): PlatformReleaseHistoryItem => ({
-      actor: run.actor?.login || 'Unknown operator',
-      conclusion: run.conclusion,
-      createdAt: run.created_at,
-      displayTitle: run.display_title || `Platform workflow run #${run.run_number}`,
-      operation:
-        platformOperation(optionalInput(run.inputs, 'operation')) ||
-        artifactEvidence.get(run.id)?.operation ||
-        operationFromTitle(run.display_title),
-      platformVersion:
-        optionalInput(run.inputs, 'platform_version') ||
-        artifactEvidence.get(run.id)?.platformVersion ||
-        null,
-      runId: run.id,
-      runNumber: run.run_number,
-      runUrl: run.html_url,
-      status: run.status,
-      updatedAt: run.updated_at,
-    })
+    (run): PlatformReleaseHistoryItem => {
+      const titleDetails = platformDetailsFromTitle(run.display_title)
+      return {
+        actor: run.actor?.login || 'Unknown operator',
+        conclusion: run.conclusion,
+        createdAt: run.created_at,
+        displayTitle: run.display_title || `Platform workflow run #${run.run_number}`,
+        operation:
+          platformOperation(optionalInput(run.inputs, 'operation')) || titleDetails.operation,
+        platformVersion:
+          optionalInput(run.inputs, 'platform_version') || titleDetails.platformVersion,
+        runId: run.id,
+        runNumber: run.run_number,
+        runUrl: run.html_url,
+        status: run.status,
+        updatedAt: run.updated_at,
+      }
+    }
   )
 
   const runsById = new Map(response.workflow_runs.map((run) => [run.id, run]))
@@ -404,22 +550,40 @@ async function loadPlatformReleaseState(token: string) {
   let stableError: string | undefined
   if (lineage.promotionRun) {
     const run = runsById.get(lineage.promotionRun.runId)
-    const evidence = artifactEvidence.get(lineage.promotionRun.runId)
-    if (!run || !evidence || evidence.operation !== 'promote-candidate') {
+    if (!run) {
       stableError =
         'The latest successful promotion artifact is unavailable or expired, so the current stable platform cannot be verified.'
     } else {
       try {
-        const manifest = await parseRunManifest(run, evidence, token)
+        const evidence = await findPlatformRunEvidence(
+          run,
+          'promote-candidate',
+          repository,
+          token
+        )
+        if (!evidence) {
+          throw new GitHubCatalogRequestError(
+            'github_artifact_unavailable',
+            'The promotion artifact is unavailable or expired.'
+          )
+        }
+        const manifest = await parseRunManifest(run, evidence, repository, token)
         stable = {
           manifest,
           promotedAt: run.updated_at,
           workflowRunId: run.id,
           workflowRunUrl: run.html_url,
         }
-      } catch {
-        stableError =
-          'The latest successful promotion manifest failed validation, so release operations are blocked.'
+      } catch (error) {
+        logCatalogFailure(error, {
+          operation: 'promote-candidate',
+          repository,
+          stage: isGitHubCatalogRequestError(error)
+            ? 'platform_evidence_retrieval'
+            : 'platform_evidence_validation',
+          workflowRunId: run.id,
+        })
+        stableError = platformEvidenceFailureMessage(error, 'promotion')
       }
     }
   }
@@ -428,17 +592,29 @@ async function loadPlatformReleaseState(token: string) {
   let candidateError: string | undefined
   if (lineage.deploymentRun) {
     const deploymentRun = runsById.get(lineage.deploymentRun.runId)
-    const deploymentEvidence = artifactEvidence.get(lineage.deploymentRun.runId)
-    if (
-      !deploymentRun ||
-      !deploymentEvidence ||
-      deploymentEvidence.operation !== 'deploy-candidate'
-    ) {
+    if (!deploymentRun) {
       candidateError =
         'The active deployment artifact is unavailable or expired, so its exact candidate cannot be verified or promoted.'
     } else {
       try {
-        const manifest = await parseRunManifest(deploymentRun, deploymentEvidence, token)
+        const deploymentEvidence = await findPlatformRunEvidence(
+          deploymentRun,
+          'deploy-candidate',
+          repository,
+          token
+        )
+        if (!deploymentEvidence) {
+          throw new GitHubCatalogRequestError(
+            'github_artifact_unavailable',
+            'The deployment artifact is unavailable or expired.'
+          )
+        }
+        const manifest = await parseRunManifest(
+          deploymentRun,
+          deploymentEvidence,
+          repository,
+          token
+        )
         activeCandidate = {
           deployment: {
             completedAt: deploymentRun.updated_at,
@@ -451,18 +627,26 @@ async function loadPlatformReleaseState(token: string) {
 
         if (lineage.verificationRun) {
           const verificationRun = runsById.get(lineage.verificationRun.runId)
-          const verificationEvidence = artifactEvidence.get(lineage.verificationRun.runId)
-          if (
-            !verificationRun ||
-            !verificationEvidence ||
-            verificationEvidence.operation !== 'verify-candidate'
-          ) {
+          if (!verificationRun) {
             candidateError =
               'The latest verification artifact is unavailable or expired, so promotion is blocked.'
           } else {
+            const verificationEvidence = await findPlatformRunEvidence(
+              verificationRun,
+              'verify-candidate',
+              repository,
+              token
+            )
+            if (!verificationEvidence) {
+              throw new GitHubCatalogRequestError(
+                'github_artifact_unavailable',
+                'The verification artifact is unavailable or expired.'
+              )
+            }
             const verifiedManifest = await parseRunManifest(
               verificationRun,
               verificationEvidence,
+              repository,
               token
             )
             if (!manifestsMatch(manifest, verifiedManifest)) {
@@ -481,10 +665,21 @@ async function loadPlatformReleaseState(token: string) {
             }
           }
         }
-      } catch {
-        candidateError =
-          'The active candidate evidence failed validation, so verification and promotion are blocked.'
-        activeCandidate = null
+      } catch (error) {
+        const evidenceType = activeCandidate ? 'verification' : 'candidate'
+        logCatalogFailure(error, {
+          operation: evidenceType === 'verification' ? 'verify-candidate' : 'deploy-candidate',
+          repository,
+          stage: isGitHubCatalogRequestError(error)
+            ? 'platform_evidence_retrieval'
+            : 'platform_evidence_validation',
+          workflowRunId:
+            evidenceType === 'verification'
+              ? lineage.verificationRun?.runId
+              : deploymentRun.id,
+        })
+        candidateError = platformEvidenceFailureMessage(error, evidenceType)
+        if (evidenceType === 'candidate') activeCandidate = null
       }
     }
   }
@@ -514,6 +709,10 @@ async function loadCatalog() {
     stable = releaseState.stable
     stableError = releaseState.stableError
   } catch (error) {
+    logCatalogFailure(error, {
+      repository: componentConfigurations.owner.repository,
+      stage: 'platform_catalog_load',
+    })
     historyError = error instanceof Error ? error.message : 'Platform release history is unavailable.'
     candidateError = 'The active platform candidate could not be verified from GitHub release evidence.'
     stableError = 'The current stable platform could not be verified from GitHub release evidence.'

@@ -22,6 +22,12 @@ export type ComponentReleaseCatalog = {
   candidates: ComponentReleaseCandidate[]
   component: ReleaseComponentName
   error?: string
+  issueCounts: {
+    artifactDownloadsFailed: number
+    artifactValidationFailed: number
+    expiredArtifacts: number
+    workflowArtifactLookupsFailed: number
+  }
   label: string
   repository: string
   skippedArtifactCount: number

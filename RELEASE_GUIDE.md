@@ -689,6 +689,25 @@ Never move or delete the published `vX.Y.Z` tag, GitHub Release, or Docker `X.Y.
 
 ## 18. Failure diagnosis
 
+### Release Center lists no trusted builds
+
+Choose **Refresh catalog** once, then inspect the Owner service logs:
+
+```bash
+sudo docker logs --since 10m --tail 300 fanal_owner 2>&1 |
+  grep -E 'release_catalog_failure|GitHub release catalog'
+```
+
+The safe `release_catalog_failure` code identifies the failed stage without printing credentials:
+
+- `github_actions_read_forbidden`: confirm the installed GitHub App has **Actions: read** for API, Main, and Owner, then approve any pending installation permission change;
+- `github_artifact_expired`: run a new successful component build instead of reusing expired evidence;
+- `github_artifact_download_*` or `artifact_storage_download_*`: verify outbound HTTPS and retry after GitHub connectivity recovers;
+- `artifact_redirect_invalid` or `artifact_response_not_zip`: preserve the log entry and investigate the GitHub artifact response; do not bypass ZIP validation;
+- `artifact_validation_failed`: download the named artifact and compare its metadata with the linked successful workflow run.
+
+The catalog discovers artifacts from each exact successful workflow run; it does not depend on intersecting a repository-wide artifact page with a separate run page. A workflow lookup, ZIP download, expiry, and metadata rejection appear as different dashboard warnings. Do not regenerate, rename, or edit a published artifact, and do not make raw image coordinates browser-editable to work around a catalog failure.
+
 ### Platform manifest validation fails
 
 Check for:

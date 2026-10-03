@@ -16,7 +16,7 @@ npm run dev
 
 ## Release Center candidate lifecycle
 
-The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 5 can combine those artifacts with unchanged stable components, enforce Semantic Version progression, generate a deterministic manifest, and operate the complete `deploy-candidate` → `verify-candidate` → `promote-candidate` lifecycle through the protected GitHub workflow.
+The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. The catalog correlates evidence through each successful workflow run, downloads the run's exact ZIP through GitHub's short-lived artifact redirect, and keeps download, expiry, and metadata-validation failures distinct. Phase 5 can combine trusted artifacts with unchanged stable components, enforce Semantic Version progression, generate a deterministic manifest, and operate the complete `deploy-candidate` → `verify-candidate` → `promote-candidate` lifecycle through the protected GitHub workflow.
 
 Dispatch is restricted to `PLATFORM_OWNER`, protected by a session-bound CSRF token and explicit confirmation, and revalidated from fresh artifact evidence on the server. Verification and promotion automatically reuse the exact deployed manifest, so the browser never submits raw image, version, or revision values. `PLATFORM_ADMIN` remains view-only. The GitHub `platform_release_env` required-reviewer gate remains mandatory after every request is queued.
 
@@ -29,7 +29,9 @@ GITHUB_CATALOG_PRIVATE_KEY_FILE
 GITHUB_CATALOG_DISPATCH_ENABLED=false
 ```
 
-Keep `GITHUB_CATALOG_DISPATCH_ENABLED=false` until the production SSM target, protected environment, and deployment scripts have been verified. Change it to `true` only to activate dispatch. Optional catalog controls are `GITHUB_CATALOG_CACHE_SECONDS` (15–300 seconds) and `GITHUB_CATALOG_MAX_CANDIDATES` (1–20 builds per component). The private key and generated workflow inputs are never returned for browser editing.
+Keep `GITHUB_CATALOG_DISPATCH_ENABLED=false` until the production SSM target, protected environment, and deployment scripts have been verified. Change it to `true` only to activate dispatch. Optional catalog controls are `GITHUB_CATALOG_CACHE_SECONDS` (15–300 seconds), `GITHUB_CATALOG_MAX_CANDIDATES` (1–20 builds per component), and `GITHUB_CATALOG_MAX_RUNS_SCANNED` (10–50 recent successful runs per component; default 20). The private key and generated workflow inputs are never returned for browser editing.
+
+Catalog failures are logged server-side as `release_catalog_failure` with a safe category, repository, workflow run ID, and artifact ID or name when known. Tokens, authorization headers, private keys, and signed artifact URLs are never logged. The Release Center also distinguishes workflow-artifact lookup failures, download failures, expired artifacts, and rejected metadata instead of reporting all exclusions as validation errors.
 
 Run the catalog contract tests with:
 
