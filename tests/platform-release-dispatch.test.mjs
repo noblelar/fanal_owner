@@ -37,7 +37,7 @@ const manifest = {
 }
 
 test('dispatch inputs are generated only from the validated server manifest', () => {
-  const dispatch = buildPlatformReleaseDispatch(manifest, requestId)
+  const dispatch = buildPlatformReleaseDispatch('deploy-candidate', manifest, requestId)
   assert.equal(dispatch.body.ref, 'master')
   assert.deepEqual(dispatch.body.inputs, {
     operation: 'deploy-candidate',
@@ -54,6 +54,20 @@ test('dispatch inputs are generated only from the validated server manifest', ()
     confirm_operation: 'true',
     release_request_id: requestId,
   })
+})
+
+test('verification and promotion reuse the same immutable manifest coordinates', () => {
+  for (const operation of ['verify-candidate', 'promote-candidate']) {
+    const dispatch = buildPlatformReleaseDispatch(operation, manifest, requestId)
+    assert.equal(dispatch.body.inputs.operation, operation)
+    assert.equal(dispatch.body.inputs.api_image, manifest.components.api.image)
+    assert.equal(dispatch.body.inputs.main_revision, manifest.components.main.revision)
+    assert.equal(dispatch.body.inputs.owner_version, manifest.components.owner.version)
+  }
+  assert.throws(
+    () => buildPlatformReleaseDispatch('rollback-candidate', manifest, requestId),
+    /supported release operation/
+  )
 })
 
 test('tampered and stale browser selections cannot become release coordinates', () => {
@@ -98,5 +112,8 @@ test('request IDs correlate the accepted dispatch to its workflow run', () => {
     requestId
   )
   assert.equal(run?.id, 11)
-  assert.throws(() => buildPlatformReleaseDispatch(manifest, 'not-a-uuid'), /valid release request ID/)
+  assert.throws(
+    () => buildPlatformReleaseDispatch('deploy-candidate', manifest, 'not-a-uuid'),
+    /valid release request ID/
+  )
 })

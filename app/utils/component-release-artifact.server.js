@@ -90,7 +90,11 @@ export function parsePlatformReleaseArtifact(archiveBytes, expected) {
     throw new Error(`Invalid platform release artifact: ${issues.join(',')}`)
   }
 
-  const expectedArtifactName = `fanal-platform-${manifest.platformVersion}-promote-candidate-${expected.workflowRunId}`
+  const operation = expected.operation || 'promote-candidate'
+  if (!['deploy-candidate', 'verify-candidate', 'promote-candidate'].includes(operation)) {
+    throw new Error('Invalid platform release artifact: operation-invalid')
+  }
+  const expectedArtifactName = `fanal-platform-${manifest.platformVersion}-${operation}-${expected.workflowRunId}`
   if (expected.artifactName !== expectedArtifactName) {
     throw new Error('Invalid platform release artifact: artifact-name-mismatch')
   }

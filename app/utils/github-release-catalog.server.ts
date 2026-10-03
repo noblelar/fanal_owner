@@ -1,4 +1,5 @@
 import type {
+  ActivePlatformCandidate,
   ComponentReleaseCandidate,
   ComponentReleaseCatalog,
   PlatformReleaseHistoryItem,
@@ -14,6 +15,10 @@ import {
   getGitHubCatalogInstallationToken,
   githubCatalogRequestHeaders,
 } from '~/utils/github-app.server'
+import {
+  derivePlatformReleaseLineage,
+  manifestsMatch,
+} from '~/utils/platform-release-state.js'
 
 const GITHUB_API_URL = 'https://api.github.com'
 const DEFAULT_CACHE_SECONDS = 60
@@ -283,11 +288,64 @@ function artifactOperation(artifact: GitHubArtifact, runId: number) {
     : null
 }
 
+type PlatformReleaseOperation =
+  | 'deploy-candidate'
+  | 'verify-candidate'
+  | 'promote-candidate'
+  | 'rollback-candidate'
+
+type ManifestPlatformReleaseOperation = Exclude<
+  PlatformReleaseOperation,
+  'rollback-candidate'
+>
+
+type PlatformRunEvidence = {
+  artifact: GitHubArtifact
+  operation: ManifestPlatformReleaseOperation
+  platformVersion: string
+}
+
+function platformOperation(value: string | null | undefined): PlatformReleaseOperation | null {
+  return value === 'deploy-candidate' ||
+    value === 'verify-candidate' ||
+    value === 'promote-candidate' ||
+    value === 'rollback-candidate'
+    ? value
+    : null
+}
+
+function manifestPlatformOperation(
+  value: string | null | undefined
+): ManifestPlatformReleaseOperation | null {
+  const operation = platformOperation(value)
+  return operation === 'rollback-candidate' ? null : operation
+}
+
+function operationFromTitle(title: string | undefined) {
+  const match = /^Fanal (deploy-candidate|verify-candidate|promote-candidate|rollback-candidate)\b/.exec(
+    title || ''
+  )
+  return platformOperation(match?.[1])
+}
+
+async function parseRunManifest(
+  run: GitHubWorkflowRun,
+  evidence: PlatformRunEvidence,
+  token: string
+) {
+  const archive = await githubBytes(evidence.artifact.archive_download_url, token)
+  return parsePlatformReleaseArtifact(archive, {
+    artifactName: evidence.artifact.name,
+    operation: evidence.operation,
+    workflowRunId: run.id,
+  })
+}
+
 async function loadPlatformReleaseState(token: string) {
   const query = new URLSearchParams({
     branch: 'master',
     event: 'workflow_dispatch',
-    per_page: '20',
+    per_page: String(MAX_WORKFLOW_RUNS),
   })
   const repository = componentConfigurations.owner.repository
   const [response, artifacts] = await Promise.all([
@@ -300,12 +358,15 @@ async function loadPlatformReleaseState(token: string) {
     ),
     listRepositoryArtifacts(repository, token),
   ])
-  const artifactEvidence = new Map<number, { artifact: GitHubArtifact; operation: string; platformVersion: string }>()
+  const artifactEvidence = new Map<number, PlatformRunEvidence>()
   for (const artifact of artifacts) {
     const runId = artifact.workflow_run?.id
     if (!runId || artifact.expired) continue
     const evidence = artifactOperation(artifact, runId)
-    if (evidence) artifactEvidence.set(runId, { artifact, ...evidence })
+    const operation = manifestPlatformOperation(evidence?.operation)
+    if (evidence && operation) {
+      artifactEvidence.set(runId, { artifact, operation, platformVersion: evidence.platformVersion })
+    }
   }
 
   const history = response.workflow_runs.map(
@@ -314,7 +375,10 @@ async function loadPlatformReleaseState(token: string) {
       conclusion: run.conclusion,
       createdAt: run.created_at,
       displayTitle: run.display_title || `Platform workflow run #${run.run_number}`,
-      operation: optionalInput(run.inputs, 'operation') || artifactEvidence.get(run.id)?.operation || null,
+      operation:
+        platformOperation(optionalInput(run.inputs, 'operation')) ||
+        artifactEvidence.get(run.id)?.operation ||
+        operationFromTitle(run.display_title),
       platformVersion:
         optionalInput(run.inputs, 'platform_version') ||
         artifactEvidence.get(run.id)?.platformVersion ||
@@ -327,58 +391,105 @@ async function loadPlatformReleaseState(token: string) {
     })
   )
 
-  const successfulRuns = response.workflow_runs
-    .filter((run) => run.conclusion === 'success')
-    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
-  const latestSuccessfulRun = successfulRuns[0]
-  if (!latestSuccessfulRun) {
-    return { history, stable: null as StablePlatformRelease | null }
+  const runsById = new Map(response.workflow_runs.map((run) => [run.id, run]))
+  const normalizedRuns = history.map((item) => ({
+    conclusion: item.conclusion,
+    createdAt: item.createdAt,
+    operation: platformOperation(item.operation),
+    runId: item.runId,
+  }))
+  const lineage = derivePlatformReleaseLineage(normalizedRuns)
+
+  let stable: StablePlatformRelease | null = null
+  let stableError: string | undefined
+  if (lineage.promotionRun) {
+    const run = runsById.get(lineage.promotionRun.runId)
+    const evidence = artifactEvidence.get(lineage.promotionRun.runId)
+    if (!run || !evidence || evidence.operation !== 'promote-candidate') {
+      stableError =
+        'The latest successful promotion artifact is unavailable or expired, so the current stable platform cannot be verified.'
+    } else {
+      try {
+        const manifest = await parseRunManifest(run, evidence, token)
+        stable = {
+          manifest,
+          promotedAt: run.updated_at,
+          workflowRunId: run.id,
+          workflowRunUrl: run.html_url,
+        }
+      } catch {
+        stableError =
+          'The latest successful promotion manifest failed validation, so release operations are blocked.'
+      }
+    }
   }
 
-  const latestEvidence = artifactEvidence.get(latestSuccessfulRun.id)
-  const latestOperation =
-    optionalInput(latestSuccessfulRun.inputs, 'operation') || latestEvidence?.operation || null
-  if (latestOperation !== 'promote-candidate') {
-    const readableOperation = latestOperation || 'an operation without complete manifest evidence'
-    return {
-      history,
-      stable: null as StablePlatformRelease | null,
-      stableError: `The latest successful platform operation is ${readableOperation}. Candidate composition is paused until the current stable manifest is confirmed by a successful promotion.`,
+  let activeCandidate: ActivePlatformCandidate | null = null
+  let candidateError: string | undefined
+  if (lineage.deploymentRun) {
+    const deploymentRun = runsById.get(lineage.deploymentRun.runId)
+    const deploymentEvidence = artifactEvidence.get(lineage.deploymentRun.runId)
+    if (
+      !deploymentRun ||
+      !deploymentEvidence ||
+      deploymentEvidence.operation !== 'deploy-candidate'
+    ) {
+      candidateError =
+        'The active deployment artifact is unavailable or expired, so its exact candidate cannot be verified or promoted.'
+    } else {
+      try {
+        const manifest = await parseRunManifest(deploymentRun, deploymentEvidence, token)
+        activeCandidate = {
+          deployment: {
+            completedAt: deploymentRun.updated_at,
+            workflowRunId: deploymentRun.id,
+            workflowRunUrl: deploymentRun.html_url,
+          },
+          manifest,
+          status: 'deployed',
+        }
+
+        if (lineage.verificationRun) {
+          const verificationRun = runsById.get(lineage.verificationRun.runId)
+          const verificationEvidence = artifactEvidence.get(lineage.verificationRun.runId)
+          if (
+            !verificationRun ||
+            !verificationEvidence ||
+            verificationEvidence.operation !== 'verify-candidate'
+          ) {
+            candidateError =
+              'The latest verification artifact is unavailable or expired, so promotion is blocked.'
+          } else {
+            const verifiedManifest = await parseRunManifest(
+              verificationRun,
+              verificationEvidence,
+              token
+            )
+            if (!manifestsMatch(manifest, verifiedManifest)) {
+              candidateError =
+                'The verification manifest does not match the deployed candidate, so promotion is blocked.'
+            } else {
+              activeCandidate = {
+                ...activeCandidate,
+                status: 'verified',
+                verification: {
+                  completedAt: verificationRun.updated_at,
+                  workflowRunId: verificationRun.id,
+                  workflowRunUrl: verificationRun.html_url,
+                },
+              }
+            }
+          }
+        }
+      } catch {
+        candidateError =
+          'The active candidate evidence failed validation, so verification and promotion are blocked.'
+        activeCandidate = null
+      }
     }
   }
 
-  if (!latestEvidence || latestEvidence.operation !== 'promote-candidate') {
-    return {
-      history,
-      stable: null as StablePlatformRelease | null,
-      stableError:
-        'The latest successful promotion artifact is unavailable or expired, so the current stable platform cannot be verified.',
-    }
-  }
-
-  try {
-    const archive = await githubBytes(latestEvidence.artifact.archive_download_url, token)
-    const manifest = parsePlatformReleaseArtifact(archive, {
-      artifactName: latestEvidence.artifact.name,
-      workflowRunId: latestSuccessfulRun.id,
-    })
-    return {
-      history,
-      stable: {
-        manifest,
-        promotedAt: latestSuccessfulRun.updated_at,
-        workflowRunId: latestSuccessfulRun.id,
-        workflowRunUrl: latestSuccessfulRun.html_url,
-      } satisfies StablePlatformRelease,
-    }
-  } catch {
-    return {
-      history,
-      stable: null as StablePlatformRelease | null,
-      stableError:
-        'The latest successful promotion manifest failed validation, so candidate composition is blocked.',
-    }
-  }
+  return { activeCandidate, candidateError, history, stable, stableError }
 }
 
 async function loadCatalog() {
@@ -391,19 +502,26 @@ async function loadCatalog() {
 
   let history: PlatformReleaseHistoryItem[] = []
   let historyError: string | undefined
+  let activeCandidate: ActivePlatformCandidate | null = null
+  let candidateError: string | undefined
   let stable: StablePlatformRelease | null = null
   let stableError: string | undefined
   try {
     const releaseState = await loadPlatformReleaseState(token)
+    activeCandidate = releaseState.activeCandidate
+    candidateError = releaseState.candidateError
     history = releaseState.history
     stable = releaseState.stable
     stableError = releaseState.stableError
   } catch (error) {
     historyError = error instanceof Error ? error.message : 'Platform release history is unavailable.'
+    candidateError = 'The active platform candidate could not be verified from GitHub release evidence.'
     stableError = 'The current stable platform could not be verified from GitHub release evidence.'
   }
 
   return {
+    activeCandidate,
+    candidateError,
     components: { api, main, owner },
     history,
     historyError,

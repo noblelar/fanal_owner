@@ -1,12 +1,21 @@
 const OWNER_REPOSITORY = 'noblelar/fanal_owner'
 const PLATFORM_WORKFLOW = 'platform-release.yml'
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+export const releaseDispatchOperations = [
+  'deploy-candidate',
+  'verify-candidate',
+  'promote-candidate',
+]
+const releaseDispatchOperationSet = new Set(releaseDispatchOperations)
 
 export function isValidReleaseRequestId(requestId) {
   return typeof requestId === 'string' && REQUEST_ID_PATTERN.test(requestId)
 }
 
-export function buildPlatformReleaseDispatch(manifest, requestId) {
+export function buildPlatformReleaseDispatch(operation, manifest, requestId) {
+  if (!releaseDispatchOperationSet.has(operation)) {
+    throw new Error('A supported release operation is required.')
+  }
   if (!isValidReleaseRequestId(requestId)) {
     throw new Error('A valid release request ID is required.')
   }
@@ -20,7 +29,7 @@ export function buildPlatformReleaseDispatch(manifest, requestId) {
     body: {
       ref: 'master',
       inputs: {
-        operation: 'deploy-candidate',
+        operation,
         platform_version: manifest.platformVersion,
         api_image: components.api.image,
         api_version: components.api.version,
@@ -71,7 +80,7 @@ export function githubDispatchFailure(status) {
   if (status === 422) {
     return {
       message:
-        'GitHub rejected the generated platform workflow inputs. Refresh the Release Center and compose the candidate again.',
+        'GitHub rejected the generated platform workflow inputs. Refresh the Release Center and retry the current lifecycle action.',
       status: 409,
     }
   }

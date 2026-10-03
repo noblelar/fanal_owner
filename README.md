@@ -14,11 +14,11 @@ Run the dev server:
 npm run dev
 ```
 
-## Release Center candidate deployment
+## Release Center candidate lifecycle
 
-The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 4 can combine those artifacts with unchanged stable components, enforce Semantic Version progression, generate a deterministic manifest, and queue `deploy-candidate` through the protected GitHub workflow.
+The Owner route `/releases` lists trusted component metadata artifacts from successful API, Main, and Owner builds. Phase 5 can combine those artifacts with unchanged stable components, enforce Semantic Version progression, generate a deterministic manifest, and operate the complete `deploy-candidate` → `verify-candidate` → `promote-candidate` lifecycle through the protected GitHub workflow.
 
-Dispatch is restricted to `PLATFORM_OWNER`, protected by a session-bound CSRF token and explicit confirmation, and revalidated from fresh artifact IDs on the server. `PLATFORM_ADMIN` remains view-only. The GitHub `platform_release_env` required-reviewer gate remains mandatory after the request is queued.
+Dispatch is restricted to `PLATFORM_OWNER`, protected by a session-bound CSRF token and explicit confirmation, and revalidated from fresh artifact evidence on the server. Verification and promotion automatically reuse the exact deployed manifest, so the browser never submits raw image, version, or revision values. `PLATFORM_ADMIN` remains view-only. The GitHub `platform_release_env` required-reviewer gate remains mandatory after every request is queued.
 
 Configure a GitHub App with **Metadata: read** and **Actions: read and write** access to `noblelar/fanalAPI`, `noblelar/fanal_main`, and `noblelar/fanal_owner`. Approve the permission change on the existing App installation, mount its PEM private key as a server-side secret file, then configure:
 

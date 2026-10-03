@@ -4,6 +4,7 @@ import { json } from '@remix-run/node'
 import { Link, useActionData, useLoaderData } from '@remix-run/react'
 import { FeedbackAlert } from '~/components/feedback-alert'
 import { PlatformReleaseComposer } from '~/components/platform-release-composer'
+import { PlatformReleaseLifecycle } from '~/components/platform-release-lifecycle'
 import { PlatformShell } from '~/components/platform-shell'
 import {
   releaseComponentNames,
@@ -11,14 +12,16 @@ import {
   type PlatformReleaseCandidatePreview,
   type PlatformReleaseComponent,
   type PlatformReleaseHistoryItem,
+  type PlatformReleaseManifest,
   type PlatformVersionOption,
   type ReadOnlyReleaseCatalog,
   type ReleaseComponentName,
 } from '~/models/platform-release-candidate'
 import { getReadOnlyReleaseCatalog } from '~/utils/github-release-catalog.server'
 import {
-  dispatchPlatformReleaseCandidate,
+  dispatchPlatformReleaseOperation,
   isPlatformReleaseDispatchEnabled,
+  type PlatformReleaseDispatchOperation,
   PlatformReleaseDispatchError,
 } from '~/utils/github-platform-release-dispatch.server'
 import {
@@ -60,6 +63,11 @@ type ReleaseActionData = {
 
 const releaseViewerRoles = new Set(['PLATFORM_OWNER', 'PLATFORM_ADMIN'])
 const releaseDispatcherRole = 'PLATFORM_OWNER'
+const releaseOperations = new Set<PlatformReleaseDispatchOperation>([
+  'deploy-candidate',
+  'verify-candidate',
+  'promote-candidate',
+])
 
 export const meta: MetaFunction = () => buildFanalMeta('Release Center')
 
@@ -105,7 +113,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
       ])
     ) as Record<ReleaseComponentName, PlatformReleaseComponent | null>
     const preview =
-      previewRequested && !catalog.stableError
+      previewRequested &&
+      !catalog.stableError &&
+      !catalog.candidateError &&
+      !catalog.activeCandidate
         ? (composePlatformReleaseCandidate({
             components: resolvedComponents,
             requestedPlatformVersion: platformVersionSelection,
@@ -151,7 +162,7 @@ function actionError(message: string, status: number) {
 export async function action({ request }: ActionFunctionArgs) {
   const authState = await requirePlatformAuthState(request)
   if (!authState.user.roles.includes(releaseDispatcherRole)) {
-    return actionError('Only a PLATFORM_OWNER can dispatch a platform candidate.', 403)
+    return actionError('Only a PLATFORM_OWNER can dispatch a platform release operation.', 403)
   }
 
   if (request.method !== 'POST') {
@@ -162,11 +173,13 @@ export async function action({ request }: ActionFunctionArgs) {
   if (!(await verifyReleaseCsrfToken(request, formData.get('_csrf')))) {
     return actionError('The release form expired or failed its security check. Refresh and try again.', 403)
   }
-  if (formData.get('_intent') !== 'deploy-candidate') {
+  const intentValue = String(formData.get('_intent') || '')
+  if (!releaseOperations.has(intentValue as PlatformReleaseDispatchOperation)) {
     return actionError('Unsupported release operation.', 400)
   }
-  if (formData.get('confirmOperation') !== 'deploy-candidate') {
-    return actionError('Explicit deployment confirmation is required.', 400)
+  const operation = intentValue as PlatformReleaseDispatchOperation
+  if (formData.get('confirmOperation') !== operation) {
+    return actionError('Explicit confirmation of this release operation is required.', 400)
   }
   if (!isPlatformReleaseDispatchEnabled()) {
     return actionError(
@@ -178,6 +191,7 @@ export async function action({ request }: ActionFunctionArgs) {
   try {
     const catalog = await getReadOnlyReleaseCatalog({ forceRefresh: true })
     if (catalog.stableError) return actionError(catalog.stableError, 409)
+    if (catalog.candidateError) return actionError(catalog.candidateError, 409)
     if (catalog.historyError) {
       return actionError(
         'Platform workflow history cannot be verified, so dispatch is blocked for safety.',
@@ -192,48 +206,86 @@ export async function action({ request }: ActionFunctionArgs) {
       )
     }
 
-    const selections = Object.fromEntries(
-      releaseComponentNames.map((component) => [
-        component,
-        String(formData.get(component) || ''),
-      ])
-    ) as Record<ReleaseComponentName, string>
-    const resolvedComponents = Object.fromEntries(
-      releaseComponentNames.map((component) => [
-        component,
-        resolveTrustedComponentSelection(catalog, component, selections[component]),
-      ])
-    ) as Record<ReleaseComponentName, PlatformReleaseComponent | null>
+    let manifest: PlatformReleaseManifest
+    if (operation === 'deploy-candidate') {
+      if (catalog.activeCandidate) {
+        return actionError(
+          `Platform ${catalog.activeCandidate.manifest.platformVersion} is already active as a ${catalog.activeCandidate.status} candidate. Complete or roll back that lifecycle before deploying another candidate.`,
+          409
+        )
+      }
 
-    if (releaseComponentNames.some((component) => !resolvedComponents[component])) {
-      return actionError(
-        'One or more selected build artifacts are no longer trusted or available. Refresh and compose the candidate again.',
-        409
-      )
-    }
+      const selections = Object.fromEntries(
+        releaseComponentNames.map((component) => [
+          component,
+          String(formData.get(component) || ''),
+        ])
+      ) as Record<ReleaseComponentName, string>
+      const resolvedComponents = Object.fromEntries(
+        releaseComponentNames.map((component) => [
+          component,
+          resolveTrustedComponentSelection(catalog, component, selections[component]),
+        ])
+      ) as Record<ReleaseComponentName, PlatformReleaseComponent | null>
 
-    const preview = composePlatformReleaseCandidate({
-      components: resolvedComponents,
-      requestedPlatformVersion: String(formData.get('platformVersion') || 'auto'),
-      stableManifest: catalog.stable?.manifest ?? null,
-    }) as PlatformReleaseCandidatePreview
-    if (preview.issues.length > 0 || !preview.manifest) {
-      return actionError(
-        preview.issues[0]?.message || 'The candidate failed server-side validation.',
-        409
-      )
+      if (releaseComponentNames.some((component) => !resolvedComponents[component])) {
+        return actionError(
+          'One or more selected build artifacts are no longer trusted or available. Refresh and compose the candidate again.',
+          409
+        )
+      }
+
+      const preview = composePlatformReleaseCandidate({
+        components: resolvedComponents,
+        requestedPlatformVersion: String(formData.get('platformVersion') || 'auto'),
+        stableManifest: catalog.stable?.manifest ?? null,
+      }) as PlatformReleaseCandidatePreview
+      if (preview.issues.length > 0 || !preview.manifest) {
+        return actionError(
+          preview.issues[0]?.message || 'The candidate failed server-side validation.',
+          409
+        )
+      }
+      manifest = preview.manifest
+    } else {
+      const candidate = catalog.activeCandidate
+      if (!candidate) {
+        return actionError(
+          'No active deployed candidate was found. Refresh the Release Center before retrying.',
+          409
+        )
+      }
+      if (String(formData.get('candidateRunId') || '') !== String(candidate.deployment.workflowRunId)) {
+        return actionError(
+          'The candidate changed after this page was loaded. Refresh before continuing.',
+          409
+        )
+      }
+      if (operation === 'verify-candidate' && candidate.status !== 'deployed') {
+        return actionError('This candidate is already verified and ready for promotion.', 409)
+      }
+      if (operation === 'promote-candidate' && candidate.status !== 'verified') {
+        return actionError('The deployed candidate must pass verification before promotion.', 409)
+      }
+      manifest = candidate.manifest
     }
 
     const requestId = randomUUID()
-    const result = await dispatchPlatformReleaseCandidate({
-      manifest: preview.manifest,
+    const result = await dispatchPlatformReleaseOperation({
+      operation,
+      manifest,
       requestId,
     })
+    const operationLabel = operation === 'deploy-candidate'
+      ? 'Candidate deployment'
+      : operation === 'verify-candidate'
+        ? 'Candidate verification'
+        : 'Candidate promotion'
     return json<ReleaseActionData>(
       {
         message: result.runId
-          ? `Candidate queued as GitHub workflow run #${result.runId}. Approval is still required in the protected platform_release_env environment.`
-          : 'Candidate accepted by GitHub. Open the platform workflow page to follow it; approval is still required in the protected environment.',
+          ? `${operationLabel} queued as GitHub workflow run #${result.runId}. Approval is still required in the protected platform_release_env environment.`
+          : `${operationLabel} accepted by GitHub. Open the platform workflow page to follow it; approval is still required in the protected environment.`,
         ok: true,
         requestId,
         runId: result.runId,
@@ -246,7 +298,7 @@ export async function action({ request }: ActionFunctionArgs) {
       return actionError(error.message, error.status)
     }
     return actionError(
-      'The platform candidate could not be dispatched because its trusted release state could not be verified.',
+      'The platform release operation could not be dispatched because its trusted release state could not be verified.',
       503
     )
   }
@@ -399,15 +451,15 @@ export default function ReleasesRoute() {
       <div className="space-y-8">
         <FeedbackAlert
           tone="info"
-          title="Guarded candidate deployment"
-          message="Phase 4 can dispatch a validated candidate to the protected GitHub workflow. GitHub environment approval remains mandatory before the production command can run."
+          title="Evidence-backed candidate lifecycle"
+          message="Phase 5 can deploy, verify, and promote an exact platform candidate without retyping release coordinates. GitHub environment approval remains mandatory before every production command."
         />
 
         {actionData ? (
           <div className="space-y-3">
             <FeedbackAlert
               tone={actionData.ok ? 'success' : 'error'}
-              title={actionData.ok ? 'Deployment request queued' : 'Deployment request blocked'}
+              title={actionData.ok ? 'Release request queued' : 'Release request blocked'}
               message={actionData.message}
             />
             {actionData.ok && actionData.runUrl ? (
@@ -442,6 +494,14 @@ export default function ReleasesRoute() {
               <SummaryCard label="Platform runs" value={String(catalog.history.length)} />
               <SummaryCard label="Last refreshed" value={formatDateTime(catalog.refreshedAt)} compact />
             </section>
+
+            <PlatformReleaseLifecycle
+              candidate={catalog.activeCandidate}
+              candidateError={catalog.candidateError}
+              canDispatch={canDispatch}
+              csrfToken={csrfToken}
+              dispatchEnabled={dispatchEnabled}
+            />
 
             <PlatformReleaseComposer
               canDispatch={canDispatch}

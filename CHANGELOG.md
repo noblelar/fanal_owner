@@ -6,6 +6,20 @@ The project follows Semantic Versioning 2.0.0. Released entries are immutable; c
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-03
+
+### Added
+
+- Added the Phase 5 Release Center lifecycle for owner-only `verify-candidate` and `promote-candidate` dispatches.
+- Added active-candidate status and linked deployment/verification workflow evidence without exposing editable release coordinates.
+- Added stale-page, lifecycle-order, exact-manifest, duplicate-operation, CSRF, and authorization guards for candidate verification and promotion.
+
+### Changed
+
+- Changed stable-release discovery to preserve the latest successful promotion while independently tracking a newer deployed or verified candidate.
+- Changed verification and promotion to reuse the server-validated manifest preserved by GitHub Actions instead of requiring operators to retype image digests, versions, and revisions.
+- Paused new candidate composition while another candidate lifecycle is active or its trusted evidence cannot be validated.
+
 ## [1.2.0] - 2026-10-02
 
 ### Added
